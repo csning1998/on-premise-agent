@@ -1,0 +1,9 @@
+
+gitlab_token = "<YOUR_GITLAB_PERSONAL_ACCESS_TOKEN>"
+
+visibility = "public"
+
+runner_description = "local-podman-runner"
+runner_tag_list    = ["podman", "local"]
+
+repository_description = "Targeting an On-Premise Implementation of a Gemini Ultra-level Deep Think RAG / Agent."

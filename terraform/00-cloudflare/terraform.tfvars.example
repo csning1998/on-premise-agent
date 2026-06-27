@@ -1,0 +1,7 @@
+# Terraform Input Values Example
+# Copy this to terraform.tfvars and fill in the actual values
+
+# Sensitive Credentials
+cloudflare = {
+  api_token = "your-cloudflare-api-token"
+}

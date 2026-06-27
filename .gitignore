@@ -31,6 +31,8 @@ terraform.tfstate
 terraform.tfstate.*
 terraform.tfstate.backup
 terraform/*.tf.bak
+terraform.tfvars
+*.auto.tfvars
 
 # GitLab
 # 1. GitLab HTTP Backend credentials
