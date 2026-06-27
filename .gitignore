@@ -8,6 +8,9 @@ artifacts
 .env.*
 !.env.example
 
+# Backup Files
+**/*.bak
+
 # Pipelines Runtime Artifacts
 pipelines/workflows/**/valves.json
 
@@ -29,9 +32,13 @@ terraform.tfstate.*
 terraform.tfstate.backup
 terraform/*.tf.bak
 
-### GitLab HTTP Backend credentials
+# GitLab
+# 1. GitLab HTTP Backend credentials
 terraform/backend-auth.hcl
 terraform/backend-state.json
+
+# 2. GitLab Runner for this Repository
+runner-config/
 
 # Data Directories
 ollama_data/

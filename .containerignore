@@ -1,0 +1,30 @@
+
+# VCS and CI/CD
+.git
+.gitignore
+.gitlab-ci.yml
+
+# Environment
+.env
+.env.bak
+*.bak
+
+# Infrastructure as Code
+terraform/
+.terraform/
+*.tfstate
+*.tfstate.*
+.ansible/
+.agents/
+
+# Development Documents
+README.md
+CODE_OF_CONDUCT.md
+.gitlab/
+.yamllint.yml
+artifacts/
+assets/
+merge-request.md
+
+# Local Residue
+~/
