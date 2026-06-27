@@ -1,0 +1,44 @@
+
+# Agent Stuffs
+.agents
+artifacts
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Pipelines Runtime Artifacts
+pipelines/workflows/**/valves.json
+
+# Python caches and virtual environments
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Terraform
+.terraform/
+.terraform.tfstate.lock.info
+terraform.tfstate
+terraform.tfstate.*
+terraform.tfstate.backup
+terraform/*.tf.bak
+
+### GitLab HTTP Backend credentials
+terraform/backend-auth.hcl
+terraform/backend-state.json
+
+# Data Directories
+ollama_data/
+open-webui_data/
+
+# Logs
+*.log
+
+# Only for recording by commit messages personally.
+merge-request.md
