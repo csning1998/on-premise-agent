@@ -146,6 +146,15 @@ Use OpenTofu/Terraform to start the integrated services and ensure SELinux label
 
     Simply change `terraform` to `tofu` if OpenTofu is preferred.
 
+- **Migrate existing local models (Optional):**
+
+    Existing models located in the host directory (e.g., `~/.ollama`) can be migrated into the isolated container volume. Re-application of the rootless ownership mapping is mandatory after file transfer.
+
+    ```zsh
+    cp -r ~/.ollama/models/* ./ollama_data/models/
+    podman unshare chown -R 0:0 ./ollama_data/models
+    ```
+
 - **Check Ollama model list and permissions:**
 
     If this step does not report `permission denied`, the configuration was successful.

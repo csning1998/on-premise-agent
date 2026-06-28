@@ -10,3 +10,107 @@ services:
     volumes:
       - ./runner-config:/etc/gitlab-runner:z
       - /run/user/${HOST_UID}/podman/podman.sock:/run/podman/podman.sock:z
+
+  ollama:
+    image: docker.io/ollama/ollama:${OLLAMA_VERSION}
+    container_name: ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    networks:
+      - rag-network
+    volumes:
+      - ./ollama_data:/root/.ollama:Z,U # Note: ,U flag is required for Rootless Podman
+    devices:
+      - nvidia.com/gpu=all
+    restart: unless-stopped
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:${OPEN_WEBUI_VERSION}
+    container_name: open-webui
+    depends_on:
+      - ollama
+      - searxng
+      - pipelines
+    ports:
+      - "3000:8080"
+    networks:
+      - rag-network
+    volumes:
+      - ./open-webui_data:/app/backend/data:Z,U
+    environment:
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
+
+      # 1. Admin Credentials
+      - WEBUI_ADMIN_EMAIL=${WEBUI_ADMIN_EMAIL}
+      - WEBUI_ADMIN_PASSWORD=${WEBUI_ADMIN_PASSWORD}
+      - WEBUI_ADMIN_NAME=${WEBUI_ADMIN_NAME}
+      - ENABLE_SIGNUP=${ENABLE_SIGNUP}
+
+      # 2. OpenAI / Ollama Connection
+      - ENABLE_OPENAI_API=${ENABLE_OPENAI_API}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL}
+
+      # 3. RAG Configuration
+      - ENABLE_RAG_WEB_SEARCH=${ENABLE_RAG_WEB_SEARCH}
+      - ENABLE_RAG_WEB_SEARCH_BY_DEFAULT=${ENABLE_RAG_WEB_SEARCH_BY_DEFAULT}
+      - RAG_WEB_SEARCH_ENGINE=${RAG_WEB_SEARCH_ENGINE}
+      - SEARXNG_BASE_URL=${SEARXNG_BASE_URL}
+      - SEARXNG_QUERY_URL=${SEARXNG_QUERY_URL}
+
+      # 4. Web Search Settings
+      - ENABLE_WEB_SEARCH=${ENABLE_WEB_SEARCH}
+      - ENABLE_WEB_SEARCH_BY_DEFAULT=${ENABLE_WEB_SEARCH_BY_DEFAULT}
+      - WEB_SEARCH_ENGINE=${WEB_SEARCH_ENGINE}
+      - WEB_SEARCH_QUERY_URL=${WEB_SEARCH_QUERY_URL}
+      - WEB_SEARCH_CONCURRENT_REQUESTS=${WEB_SEARCH_CONCURRENT_REQUESTS}
+      - WEB_SEARCH_RESULT_COUNT=${WEB_SEARCH_RESULT_COUNT}
+
+      # 5. RAG Precision Tuning & Reranking
+      - ENABLE_RAG_RERANKING=${ENABLE_RAG_RERANKING}
+      - ENABLE_RAG_SOURCES=${ENABLE_RAG_SOURCES}
+      - RAG_CITATION_ENGINE=${RAG_CITATION_ENGINE}
+      - RAG_RELEVANCE_THRESHOLD=${RAG_RELEVANCE_THRESHOLD}
+      - RAG_RERANKING_MODEL=${RAG_RERANKING_MODEL}
+      - RAG_TOP_K=${RAG_TOP_K}
+      - RAG_TOP_K_RERANKER=${RAG_TOP_K_RERANKER}
+
+      # 6. Pipelines Integration
+      - OPENAI_API_BASE_URLS=${OPENAI_API_BASE_URLS}
+      - OPENAI_API_KEYS=${OPENAI_API_KEYS}
+
+      # 7. Infrastructure & UI Control
+      - ENABLE_PERSISTENT_CONFIG=${ENABLE_PERSISTENT_CONFIG}
+    restart: unless-stopped
+
+  searxng:
+    image: docker.io/searxng/searxng:${SEARXNG_VERSION}
+    container_name: searxng
+    networks:
+      - rag-network
+    volumes:
+      - ./searxng_data:/etc/searxng:Z,ro
+    environment:
+      - SEARXNG_LIMITER=false
+      - SEARXNG_BASE_URL=${SEARXNG_BASE_URL}
+      - BASE_URL=${SEARXNG_BASE_URL}
+      - SEARXNG_SECRET=${SEARXNG_SECRET}
+    restart: unless-stopped
+
+  pipelines:
+    image: ghcr.io/open-webui/pipelines:${PIPELINES_VERSION}
+    container_name: pipelines
+    networks:
+      - rag-network
+    volumes:
+      - ./pipelines:/app/pipelines:Z,U
+    environment:
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL}
+      - SEARXNG_BASE_URL=${SEARXNG_BASE_URL}
+      - PIPELINES_API_KEY=${OPENAI_API_KEYS}
+      - PYTHONPATH=/app
+      - PIPELINES_DIR=/app/pipelines/workflows
+    restart: unless-stopped
+
+networks:
+  rag-network:
+    driver: bridge

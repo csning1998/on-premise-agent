@@ -4,6 +4,11 @@
 .gitignore
 .gitlab-ci.yml
 
+# Persistent Volume
+ollama_data/
+open-webui_data/
+searxng_data/
+
 # Environment
 .env
 .env.bak
@@ -16,6 +21,16 @@ terraform/
 *.tfstate.*
 .ansible/
 .agents/
+
+# Python Caches
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
 
 # Development Documents
 README.md
