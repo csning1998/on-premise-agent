@@ -27,7 +27,7 @@
 
 ### Verification
 
-- [ ] **Cluster Status**: Verify node status (e.g., `vault operator raft list-peers`).
-- [ ] **Failover**: Verify high availability behavior.
-- [ ] **VIP Access**: Verify connectivity via Load Balancer/VIP.
+- [ ] **Lint**: Verify node status (e.g., `vault operator raft list-peers`).
+- [ ] **Syntax**: Verify high availability behavior.
+- [ ] **Runtime**: Verify connectivity via Load Balancer/VIP.
 - [ ] **Idempotency**: Verify repeated execution does not corrupt state.

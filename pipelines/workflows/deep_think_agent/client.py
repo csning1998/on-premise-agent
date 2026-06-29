@@ -1,13 +1,14 @@
 """Client implementations for Ollama and SearXNG APIs."""
 
 import json
+import urllib.parse
 from typing import Generator
 
 import httpx
 import requests
 
 
-def parse_json_chunk(line: bytes) -> dict | None:
+def parse_json_chunk(line: bytes | str) -> dict | None:
     """Parses a single JSON line chunk from Ollama stream.
 
     Avoids nested try-except blocks.
@@ -85,8 +86,13 @@ class SearxngClient:
 
     async def search(self, query: str) -> list:
         """Queries SearXNG search endpoint."""
-        search_url = f"{self.base_url}/search?q={query}&format=json"
+        encoded_query = urllib.parse.quote(query, safe="")
+        search_url = f"{self.base_url}/search?q={encoded_query}&format=json"
         async with httpx.AsyncClient() as client:
-            response = await client.get(search_url, timeout=60)
-            response.raise_for_status()
-            return response.json().get("results", [])
+            try:
+                response = await client.get(search_url, timeout=60)
+                response.raise_for_status()
+                return response.json().get("results", [])
+            except (httpx.HTTPError, ValueError) as e:
+                print(f"SearXNG search failed: {e}")
+                return []

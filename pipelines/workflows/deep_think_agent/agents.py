@@ -24,7 +24,7 @@ def clean_keywords(text: str) -> str:
         r"<reasoning>[\s\S]*?</reasoning>", "", text, flags=re.IGNORECASE
     )
     text = re.sub(r"```(?:json)?\s*[\s\S]*?```", "", text)
-    text = re.sub(r"\{.*\}", "", text)
+    text = re.sub(r"\{.*?\}", "", text)
     text = re.sub(r"[\"\'\[\]\(\)]", "", text)
     words = re.findall(r"\w+", text)
     return " ".join(words[:5]).strip()
@@ -48,6 +48,7 @@ async def run_researcher(
     keywords_prompt = (
         "You must output ONLY 3-5 search keywords for web search. "
         "Do NOT use markdown. DO NOT use any emojis. "
+        "If no search is needed, output NO_SEARCH. "
         "If you need to think, put it inside <think>...</think> tags FIRST, "
         "then output just the keywords. Query: " + user_message
     )

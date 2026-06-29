@@ -1,12 +1,18 @@
 """Gemma 4 Multi-Agent Deep Think.
 
-4 e4b agents in parallel + 26b-a4b finalizer with chain-of-thinking.
+4 e4b agents in parallel + 12b finalizer with chain-of-thinking.
+
+Requires Python 3.11+ for asyncio.Runner.
 """
 
 import asyncio
+from typing import Any
+from typing import Callable
+from typing import Coroutine
 from typing import Generator
 from typing import Iterator
 from typing import List
+from typing import Optional
 from typing import Union
 
 from pydantic import BaseModel
@@ -73,138 +79,157 @@ class Pipeline:
         Executes 4 e4b agents in parallel, followed by a 26b finalizer
         using UI thinking blocks.
         """
-        __event_emitter__ = body.get("__event_emitter__")
+        __event_emitter__: Optional[
+            Callable[[Any], Coroutine[Any, Any, None]]
+        ] = body.get("__event_emitter__")
 
         ollama_client = OllamaClient(self.valves.ollama_url)
         searxng_client = SearxngClient(self.valves.searxng_url)
 
         def stream_response():
-            yield "<thought>\n"
-            yield "#### Agents Initializing...\n"
+            # Reuse a single event loop across all async stages. Open WebUI
+            # Pipelines runs pipe() in a threadpool with no running loop, so
+            # a single Runner replaces the prior multiple asyncio.run() calls.
+            with asyncio.Runner() as runner:
+                yield "<thought>\n"
+                yield "#### Agents Initializing...\n"
 
-            # Stage 1: Run Coordinator and Researcher in parallel
-            async def run_stage_1():
-                if __event_emitter__:
-                    await __event_emitter__(
-                        {
-                            "type": "status",
-                            "data": {
-                                "description": (
-                                    "Stage 1: Coordinator and Research starting"
-                                ),
-                                "done": False,
-                            },
-                        }
+                if callable(__event_emitter__):
+                    runner.run(
+                        __event_emitter__(
+                            {
+                                "type": "status",
+                                "data": {
+                                    "description": (
+                                        "Stage 1: Coordinator and Research"
+                                        " starting"
+                                    ),
+                                    "done": False,
+                                },
+                            }
+                        )
                     )
-                coordinator_task = asyncio.create_task(
-                    run_coordinator(
-                        ollama_client, self.valves.e4b_model, user_message
+
+                async def run_stage_1():
+                    t1 = asyncio.create_task(
+                        run_coordinator(
+                            ollama_client, self.valves.e4b_model, user_message
+                        )
                     )
+                    t2 = asyncio.create_task(
+                        run_researcher(
+                            ollama_client,
+                            searxng_client,
+                            self.valves.e4b_model,
+                            user_message,
+                        )
+                    )
+                    return await asyncio.gather(t1, t2)
+
+                coordinator_output, researcher_facts = runner.run(run_stage_1())
+
+                yield "</thought>\n\n"
+
+                yield "<thought>\n"
+                yield f"#### Coordinator\n{coordinator_output}\n\n"
+                yield "</thought>\n\n"
+
+                yield "<thought>\n"
+                if len(researcher_facts) > 300:
+                    researcher_snippet = researcher_facts[:300] + "..."
+                else:
+                    researcher_snippet = researcher_facts
+                yield f"#### Research\n{researcher_snippet}\n\n"
+                yield "</thought>\n\n"
+
+                if callable(__event_emitter__):
+                    runner.run(
+                        __event_emitter__(
+                            {
+                                "type": "status",
+                                "data": {
+                                    "description": (
+                                        "Stage 2: Logic and Contrarian starting"
+                                    ),
+                                    "done": False,
+                                },
+                            }
+                        )
+                    )
+
+                async def run_stage_2(facts: str):
+                    t1 = asyncio.create_task(
+                        run_logic(
+                            ollama_client,
+                            self.valves.e4b_model,
+                            user_message,
+                            facts,
+                        )
+                    )
+                    t2 = asyncio.create_task(
+                        run_contrarian(
+                            ollama_client,
+                            self.valves.e4b_model,
+                            user_message,
+                            facts,
+                        )
+                    )
+                    return await asyncio.gather(t1, t2)
+
+                logic_output, contrarian_output = runner.run(
+                    run_stage_2(researcher_facts)
                 )
-                researcher_task = asyncio.create_task(
-                    run_researcher(
-                        ollama_client,
-                        searxng_client,
-                        self.valves.e4b_model,
-                        user_message,
+
+                if callable(__event_emitter__):
+                    runner.run(
+                        __event_emitter__(
+                            {
+                                "type": "status",
+                                "data": {
+                                    "description": "Agents execution completed",
+                                    "done": True,
+                                },
+                            }
+                        )
                     )
+
+                yield "<thought>\n"
+                yield f"#### Logic\n{logic_output}\n\n"
+                yield "</thought>\n\n"
+
+                yield "<thought>\n"
+                yield f"#### Contrarian\n{contrarian_output}\n"
+                yield "</thought>\n\n"
+
+                # Package into immutable NamedTuple to preserve final states
+                agent_outputs = AgentOutputs(
+                    coordinator=coordinator_output,
+                    researcher=researcher_facts,
+                    logic=logic_output,
+                    contrarian=contrarian_output,
                 )
-                return await asyncio.gather(coordinator_task, researcher_task)
 
-            coordinator_output, researcher_facts = asyncio.run(run_stage_1())
-            yield "</thought>\n\n"
-
-            yield "<thought>\n"
-            yield f"#### Coordinator\n{coordinator_output}\n\n"
-            yield "</thought>\n\n"
-
-            yield "<thought>\n"
-            yield f"#### Research\n{researcher_facts[:300]}...\n\n"
-            yield "</thought>\n\n"
-
-            # Stage 2: Run Logic and Contrarian in parallel
-            async def run_stage_2(facts):
-                if __event_emitter__:
-                    await __event_emitter__(
-                        {
-                            "type": "status",
-                            "data": {
-                                "description": (
-                                    "Stage 2: Logic and Contrarian starting"
-                                ),
-                                "done": False,
-                            },
-                        }
-                    )
-                logic_task = asyncio.create_task(
-                    run_logic(
-                        ollama_client,
-                        self.valves.e4b_model,
-                        user_message,
-                        facts,
-                    )
+                aligned_context = (
+                    f"COORDINATOR: {agent_outputs.coordinator}\n"
+                    f"RESEARCH FACTS: {agent_outputs.researcher}\n"
+                    f"LOGIC CHECK: {agent_outputs.logic}\n"
+                    f"CONTRARIAN: {agent_outputs.contrarian}"
                 )
-                contrarian_task = asyncio.create_task(
-                    run_contrarian(
-                        ollama_client,
-                        self.valves.e4b_model,
-                        user_message,
-                        facts,
-                    )
+
+                final_prompt = (
+                    "You are the finalizer. "
+                    "CRITICAL: If you use <think> tags for reasoning, "
+                    "you MUST output your final answer OUTSIDE and AFTER "
+                    "the </think> tag. "
+                    "Do NOT place your final answer inside the thinking "
+                    "process. "
+                    "DO NOT use any emojis. "
+                    f"ALIGNED CONTEXT: {aligned_context} \n "
+                    f"USER QUERY: {user_message}"
                 )
-                res = await asyncio.gather(logic_task, contrarian_task)
-                if __event_emitter__:
-                    await __event_emitter__(
-                        {
-                            "type": "status",
-                            "data": {
-                                "description": "Agents execution completed",
-                                "done": True,
-                            },
-                        }
-                    )
-                return res
 
-            logic_output, contrarian_output = asyncio.run(
-                run_stage_2(researcher_facts)
-            )
-
-            yield "<thought>\n"
-            yield f"#### Logic\n{logic_output}\n\n"
-            yield "</thought>\n\n"
-
-            yield "<thought>\n"
-            yield f"#### Contrarian\n{contrarian_output}\n"
-            yield "</thought>\n\n"
-
-            # Package into immutable NamedTuple to preserve final states
-            agent_outputs = AgentOutputs(
-                coordinator=coordinator_output,
-                researcher=researcher_facts,
-                logic=logic_output,
-                contrarian=contrarian_output,
-            )
-
-            aligned_context = (
-                f"COORDINATOR: {agent_outputs.coordinator}\n"
-                f"RESEARCH FACTS: {agent_outputs.researcher}\n"
-                f"LOGIC CHECK: {agent_outputs.logic}\n"
-                f"CONTRARIAN: {agent_outputs.contrarian}"
-            )
-
-            final_prompt = (
-                "You are the finalizer. "
-                "CRITICAL: If you use <think> tags for reasoning, "
-                "you MUST output your final answer OUTSIDE and AFTER "
-                "the </think> tag. "
-                "Do NOT place your final answer inside the thinking process. "
-                "DO NOT use any emojis. "
-                f"ALIGNED CONTEXT: {aligned_context} \n "
-                f"USER QUERY: {user_message}"
-            )
-
-            yield from ollama_client.stream_generate(
-                self.valves.a4b_model, final_prompt
-            )
+                yield from ollama_client.stream_generate(
+                    self.valves.a4b_model, final_prompt
+                )
 
         return stream_response()
