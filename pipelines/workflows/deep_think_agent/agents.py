@@ -43,6 +43,7 @@ async def run_researcher(
     searxng_client: SearxngClient,
     gemma_e4b_model: str,
     user_message: str,
+    today: str,
 ) -> str:
     """Researcher agent - queries external facts and aligns them."""
     keywords_prompt = (
@@ -69,7 +70,13 @@ async def run_researcher(
                 for r in results
             ]
         )
-        align_prompt = f"Align the following facts:\n{facts}"
+        align_prompt = (
+            f"Today is {today}. "
+            "The following facts are retrieved from real-time web search "
+            "and reflect events that have already occurred. "
+            "Treat them as verified ground truth. "
+            f"Align and summarize:\n{facts}"
+        )
         return await ollama_client.async_generate(gemma_e4b_model, align_prompt)
     except Exception as e:
         return f"Search failed: {e}"
@@ -78,10 +85,33 @@ async def run_researcher(
 async def run_logic(
     client: OllamaClient, model: str, user_message: str, facts: str
 ) -> str:
-    """Logic Verifier agent - verifies consistency."""
+    """Logic Verifier agent that reconciles conflicts and verifies consistency.
+
+    `facts` is interpolated into the prompt without length truncation. The
+    current configuration is safe because `facts` originates from the E4B
+    researcher whose output is bounded by its own n_ctx=4096. If the researcher
+    model is replaced with a larger one (e.g. 12b, n_ctx=16384), the researcher
+    output can exceed the logic model's context window and cause silent
+    truncation or hallucination at the Ollama layer.
+
+    Args:
+        client: Ollama client used to call async_generate.
+        model: Model identifier passed to the client.
+        user_message: Original user query.
+        facts: Aligned researcher output. Unbounded; see note above.
+
+    Returns:
+        Reconciled logical analysis as a plain string.
+    """
     prompt = (
-        f"Verify logical consistency for query: {user_message}\n"
-        f"FACTS: {facts}\nDO NOT use any emojis."
+        f"You are a logic verifier. Query: {user_message}\n"
+        f"FACTS from web search (treat as ground truth): {facts}\n"
+        "Step 1: Identify any conflicts between sources. "
+        "Step 2: For each conflict, reason which claim is more credible "
+        "based on source specificity, recency, and reliability. "
+        "Step 3: Output a reconciled summary of what is most likely true. "
+        "Do NOT merely list conflicts without resolution. "
+        "DO NOT use any emojis."
     )
     return await client.async_generate(model, prompt)
 
@@ -89,7 +119,20 @@ async def run_logic(
 async def run_contrarian(
     client: OllamaClient, model: str, user_message: str, facts: str
 ) -> str:
-    """Contrarian agent - challenges assumptions."""
+    """Contrarian agent that challenges assumptions against retrieved facts.
+
+    Carries the same ``facts`` length constraint as ``run_logic``. See that
+    function's docstring for the full risk scenario and trigger condition.
+
+    Args:
+        client: Ollama client used to call async_generate.
+        model: Model identifier passed to the client.
+        user_message: Original user query.
+        facts: Aligned researcher output. Unbounded; see run_logic.
+
+    Returns:
+        Counter-arguments and assumption challenges as a plain string.
+    """
     prompt = (
         f"List counter-arguments for query: {user_message}\n"
         f"FACTS: {facts}\nDO NOT use any emojis."

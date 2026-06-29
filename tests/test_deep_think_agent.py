@@ -1,5 +1,6 @@
 """Tests for Gemma 4 Multi-Agent Deep Think."""
 
+from pathlib import Path
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -161,11 +162,14 @@ async def test_run_researcher_success():
     )
 
     res = await run_researcher(
-        mock_ollama, mock_searxng, "e4b-model", "user-query"
+        mock_ollama, mock_searxng, "e4b-model", "user-query", "2026-06-29"
     )
     assert res == "aligned facts"
     assert mock_ollama.async_generate.call_count == 2
     mock_searxng.search.assert_called_once_with("keywords")
+    align_prompt = mock_ollama.async_generate.call_args_list[1][0][1]
+    assert "2026-06-29" in align_prompt
+    assert "verified ground truth" in align_prompt
 
 
 @pytest.mark.asyncio
@@ -178,8 +182,14 @@ async def test_run_logic():
     assert res == "logic-output"
     mock_client.async_generate.assert_called_once_with(
         "e4b-model",
-        "Verify logical consistency for query: query\n"
-        "FACTS: facts\nDO NOT use any emojis.",
+        "You are a logic verifier. Query: query\n"
+        "FACTS from web search (treat as ground truth): facts\n"
+        "Step 1: Identify any conflicts between sources. "
+        "Step 2: For each conflict, reason which claim is more credible "
+        "based on source specificity, recency, and reliability. "
+        "Step 3: Output a reconciled summary of what is most likely true. "
+        "Do NOT merely list conflicts without resolution. "
+        "DO NOT use any emojis.",
     )
 
 
@@ -195,6 +205,19 @@ async def test_run_contrarian():
         "e4b-model",
         "List counter-arguments for query: query\n"
         "FACTS: facts\nDO NOT use any emojis.",
+    )
+
+
+def test_pipe_uses_utc_for_date():
+    """Regression guard: pipe() must compute today in UTC."""
+    dta_path = (
+        Path(__file__).resolve().parent.parent
+        / "pipelines/workflows/deep_think_agent.py"
+    )
+    source = dta_path.read_text()
+    assert "datetime.timezone.utc" in source, (
+        "pipe() must use datetime.datetime.now(datetime.timezone.utc), "
+        "not datetime.date.today()"
     )
 
 

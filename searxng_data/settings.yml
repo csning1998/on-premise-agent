@@ -497,7 +497,6 @@ engines:
   - name: wikipedia
     engine: wikipedia
     shortcut: wp
-    disabled: true
     inactive: true
     # add "list" to the array to get results in the results list
     display_type: ["infobox"]
@@ -511,7 +510,6 @@ engines:
   - name: bing
     engine: bing
     shortcut: bi
-    disabled: true
 
   - name: bing images
     engine: bing_images
@@ -797,7 +795,6 @@ engines:
   - name: duckduckgo
     engine: duckduckgo
     shortcut: ddg
-    disabled: true
 
   - name: duckduckgo images
     engine: duckduckgo_extra
@@ -2592,7 +2589,6 @@ engines:
   - name: brave
     engine: brave
     shortcut: br
-    disabled: true
     time_range_support: true
     paging: true
     categories: [general, web]

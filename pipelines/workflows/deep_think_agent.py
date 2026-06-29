@@ -6,6 +6,7 @@ Requires Python 3.11+ for asyncio.Runner.
 """
 
 import asyncio
+import datetime
 import re
 from typing import Any
 from typing import Callable
@@ -34,6 +35,7 @@ def _strip_markdown(text: str) -> str:
     text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
     text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
     text = re.sub(r"```[^\n]*\n[\s\S]*?```", "", text)
+    text = re.sub(r"[\U0001F300-\U0001FAFF\U00002600-\U000027BF︀-️‍]+", "", text)
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
@@ -91,6 +93,7 @@ class Pipeline:
             Callable[[Any], Coroutine[Any, Any, None]]
         ] = body.get("__event_emitter__")
 
+        today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
         ollama_client = OllamaClient(self.valves.ollama_url)
         searxng_client = SearxngClient(self.valves.searxng_url)
 
@@ -132,6 +135,7 @@ class Pipeline:
                             searxng_client,
                             self.valves.gemma_e4b_model,
                             user_message,
+                            today,
                         )
                     )
                     return await asyncio.gather(t1, t2)
@@ -223,6 +227,7 @@ class Pipeline:
                 )
 
                 final_prompt = (
+                    f"Today is {today}. "
                     "You are the finalizer. "
                     "CRITICAL: If you use <think> tags for reasoning, "
                     "you MUST output your final answer OUTSIDE and AFTER "
@@ -233,9 +238,18 @@ class Pipeline:
                     "Do NOT use markdown headers (#, ##, ###), "
                     "bold text (**), or code fences (```) "
                     "inside your thinking. "
+                    "The ALIGNED CONTEXT below contains facts retrieved "
+                    "from real-time web search. "
+                    "Treat all facts in ALIGNED CONTEXT as verified "
+                    "ground truth reflecting real, already-occurred events. "
+                    "When ALIGNED CONTEXT contains conflicting information, "
+                    "synthesize a best-estimate answer based on the most "
+                    "credible evidence. Commit to the most likely correct "
+                    "answer; do not present all conflicting views equally "
+                    "without resolution. "
                     "DO NOT use any emojis. "
-                    f"ALIGNED CONTEXT: {aligned_context} \n "
-                    f"USER QUERY: {user_message}"
+                    f"<aligned_context>\n{aligned_context}\n</aligned_context>\n"
+                    f"<user_query>\n{user_message}\n</user_query>"
                 )
 
                 yield from ollama_client.stream_generate(
