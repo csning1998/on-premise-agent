@@ -1,9 +1,12 @@
 {
     "[python]": {
         "editor.defaultFormatter": "charliermarsh.ruff",
+        "editor.tabSize": 4,
+        "editor.indentSize": 4,
         "editor.formatOnSave": true,
         "editor.codeActionsOnSave": {
-            "source.organizeImports": "explicit"
+            "source.organizeImports.ruff": "explicit",
+            "source.fixAll.ruff": "explicit"
         }
     },
     "ruff.nativeServer": "on"

@@ -20,7 +20,10 @@ from typing import Union
 from pydantic import BaseModel
 from pydantic import Field
 
+from pipelines.workflows.deep_think_agent.agents import NO_FACTS_FOUND
 from pipelines.workflows.deep_think_agent.agents import AgentOutputs
+from pipelines.workflows.deep_think_agent.agents import _build_finalizer_prompt
+from pipelines.workflows.deep_think_agent.agents import _Sentinel
 from pipelines.workflows.deep_think_agent.agents import run_contrarian
 from pipelines.workflows.deep_think_agent.agents import run_coordinator
 from pipelines.workflows.deep_think_agent.agents import run_logic
@@ -146,7 +149,9 @@ class Pipeline:
                     f"Coordinator:\n\n{_strip_markdown(coordinator_output)}\n\n"
                 )
 
-                if len(researcher_facts) > 300:
+                if researcher_facts is NO_FACTS_FOUND:
+                    researcher_snippet = "No web search results found."
+                elif len(researcher_facts) > 300:
                     researcher_snippet = researcher_facts[:300] + "..."
                 else:
                     researcher_snippet = researcher_facts
@@ -169,7 +174,7 @@ class Pipeline:
                         )
                     )
 
-                async def run_stage_2(facts: str):
+                async def run_stage_2(facts: str | _Sentinel):
                     t1 = asyncio.create_task(
                         run_logic(
                             ollama_client,
@@ -219,37 +224,8 @@ class Pipeline:
                     contrarian=contrarian_output,
                 )
 
-                aligned_context = (
-                    f"COORDINATOR: {agent_outputs.coordinator}\n"
-                    f"RESEARCH FACTS: {agent_outputs.researcher}\n"
-                    f"LOGIC CHECK: {agent_outputs.logic}\n"
-                    f"CONTRARIAN: {agent_outputs.contrarian}"
-                )
-
-                final_prompt = (
-                    f"Today is {today}. "
-                    "You are the finalizer. "
-                    "CRITICAL: If you use <think> tags for reasoning, "
-                    "you MUST output your final answer OUTSIDE and AFTER "
-                    "the </think> tag. "
-                    "Do NOT place your final answer inside the thinking "
-                    "process. "
-                    "Inside <think> tags, write in pure prose only. "
-                    "Do NOT use markdown headers (#, ##, ###), "
-                    "bold text (**), or code fences (```) "
-                    "inside your thinking. "
-                    "The ALIGNED CONTEXT below contains facts retrieved "
-                    "from real-time web search. "
-                    "Treat all facts in ALIGNED CONTEXT as verified "
-                    "ground truth reflecting real, already-occurred events. "
-                    "When ALIGNED CONTEXT contains conflicting information, "
-                    "synthesize a best-estimate answer based on the most "
-                    "credible evidence. Commit to the most likely correct "
-                    "answer; do not present all conflicting views equally "
-                    "without resolution. "
-                    "DO NOT use any emojis. "
-                    f"<aligned_context>\n{aligned_context}\n</aligned_context>\n"
-                    f"<user_query>\n{user_message}\n</user_query>"
+                final_prompt = _build_finalizer_prompt(
+                    today, user_message, agent_outputs
                 )
 
                 yield from ollama_client.stream_generate(
