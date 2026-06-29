@@ -41,7 +41,7 @@ async def run_coordinator(
 async def run_researcher(
     ollama_client: OllamaClient,
     searxng_client: SearxngClient,
-    e4b_model: str,
+    gemma_e4b_model: str,
     user_message: str,
 ) -> str:
     """Researcher agent - queries external facts and aligns them."""
@@ -53,7 +53,7 @@ async def run_researcher(
         "then output just the keywords. Query: " + user_message
     )
     raw_keywords = await ollama_client.async_generate(
-        e4b_model, keywords_prompt
+        gemma_e4b_model, keywords_prompt
     )
     keywords = clean_keywords(raw_keywords)
 
@@ -70,7 +70,7 @@ async def run_researcher(
             ]
         )
         align_prompt = f"Align the following facts:\n{facts}"
-        return await ollama_client.async_generate(e4b_model, align_prompt)
+        return await ollama_client.async_generate(gemma_e4b_model, align_prompt)
     except Exception as e:
         return f"Search failed: {e}"
 

@@ -6,6 +6,7 @@ Requires Python 3.11+ for asyncio.Runner.
 """
 
 import asyncio
+import re
 from typing import Any
 from typing import Callable
 from typing import Coroutine
@@ -29,6 +30,13 @@ from pipelines.workflows.deep_think_agent.config import OLLAMA_BASE_URL
 from pipelines.workflows.deep_think_agent.config import SEARXNG_BASE_URL
 
 
+def _strip_markdown(text: str) -> str:
+    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
+    text = re.sub(r"```[^\n]*\n[\s\S]*?```", "", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
 class Pipeline:
     """Open WebUI Pipeline for 4-agent multi-stage reasoning."""
 
@@ -50,11 +58,11 @@ class Pipeline:
             default=SEARXNG_BASE_URL,
             description="Base URL for the SearXNG API.",
         )
-        e4b_model: str = Field(
+        gemma_e4b_model: str = Field(
             default="gemma4:E4B-it-qat",
             description="Model identifier for all e4b agents.",
         )
-        a4b_model: str = Field(
+        gemma_12b_model: str = Field(
             default="gemma4:12b-it-qat",
             description="Model identifier for finalizer.",
         )
@@ -76,7 +84,7 @@ class Pipeline:
     ) -> Union[str, Generator, Iterator]:
         """Main pipeline orchestration.
 
-        Executes 4 e4b agents in parallel, followed by a 26b finalizer
+        Executes 4 e4b agents in parallel, followed by a 12b finalizer
         using UI thinking blocks.
         """
         __event_emitter__: Optional[
@@ -91,8 +99,8 @@ class Pipeline:
             # Pipelines runs pipe() in a threadpool with no running loop, so
             # a single Runner replaces the prior multiple asyncio.run() calls.
             with asyncio.Runner() as runner:
-                yield "<thought>\n"
-                yield "#### Agents Initializing...\n"
+                yield "<think>\n"
+                yield "Agents initializing...\n\n"
 
                 if callable(__event_emitter__):
                     runner.run(
@@ -113,14 +121,16 @@ class Pipeline:
                 async def run_stage_1():
                     t1 = asyncio.create_task(
                         run_coordinator(
-                            ollama_client, self.valves.e4b_model, user_message
+                            ollama_client,
+                            self.valves.gemma_e4b_model,
+                            user_message,
                         )
                     )
                     t2 = asyncio.create_task(
                         run_researcher(
                             ollama_client,
                             searxng_client,
-                            self.valves.e4b_model,
+                            self.valves.gemma_e4b_model,
                             user_message,
                         )
                     )
@@ -128,19 +138,17 @@ class Pipeline:
 
                 coordinator_output, researcher_facts = runner.run(run_stage_1())
 
-                yield "</thought>\n\n"
+                yield (
+                    f"Coordinator:\n\n{_strip_markdown(coordinator_output)}\n\n"
+                )
 
-                yield "<thought>\n"
-                yield f"#### Coordinator\n{coordinator_output}\n\n"
-                yield "</thought>\n\n"
-
-                yield "<thought>\n"
                 if len(researcher_facts) > 300:
                     researcher_snippet = researcher_facts[:300] + "..."
                 else:
                     researcher_snippet = researcher_facts
-                yield f"#### Research\n{researcher_snippet}\n\n"
-                yield "</thought>\n\n"
+                yield (
+                    f"Research:\n\n{_strip_markdown(researcher_snippet)}\n\n"
+                )
 
                 if callable(__event_emitter__):
                     runner.run(
@@ -161,7 +169,7 @@ class Pipeline:
                     t1 = asyncio.create_task(
                         run_logic(
                             ollama_client,
-                            self.valves.e4b_model,
+                            self.valves.gemma_e4b_model,
                             user_message,
                             facts,
                         )
@@ -169,7 +177,7 @@ class Pipeline:
                     t2 = asyncio.create_task(
                         run_contrarian(
                             ollama_client,
-                            self.valves.e4b_model,
+                            self.valves.gemma_e4b_model,
                             user_message,
                             facts,
                         )
@@ -193,13 +201,11 @@ class Pipeline:
                         )
                     )
 
-                yield "<thought>\n"
-                yield f"#### Logic\n{logic_output}\n\n"
-                yield "</thought>\n\n"
-
-                yield "<thought>\n"
-                yield f"#### Contrarian\n{contrarian_output}\n"
-                yield "</thought>\n\n"
+                yield f"Logic:\n\n{_strip_markdown(logic_output)}\n\n"
+                yield (
+                    f"Contrarian:\n\n{_strip_markdown(contrarian_output)}\n\n"
+                )
+                yield "</think>\n\n"
 
                 # Package into immutable NamedTuple to preserve final states
                 agent_outputs = AgentOutputs(
@@ -223,13 +229,17 @@ class Pipeline:
                     "the </think> tag. "
                     "Do NOT place your final answer inside the thinking "
                     "process. "
+                    "Inside <think> tags, write in pure prose only. "
+                    "Do NOT use markdown headers (#, ##, ###), "
+                    "bold text (**), or code fences (```) "
+                    "inside your thinking. "
                     "DO NOT use any emojis. "
                     f"ALIGNED CONTEXT: {aligned_context} \n "
                     f"USER QUERY: {user_message}"
                 )
 
                 yield from ollama_client.stream_generate(
-                    self.valves.a4b_model, final_prompt
+                    self.valves.gemma_12b_model, final_prompt
                 )
 
         return stream_response()
