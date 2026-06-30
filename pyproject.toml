@@ -30,3 +30,8 @@ convention = "google"
 # Google Style: single line imports ordered alphabetically
 force-single-line = true
 lines-after-imports = 2
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.20",
+]
