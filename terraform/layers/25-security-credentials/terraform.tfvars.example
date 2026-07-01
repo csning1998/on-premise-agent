@@ -1,0 +1,15 @@
+
+vault_addr = "https://127.0.0.1:8210"
+
+# agent_role_id and agent_secret_id are NOT set here. Export them as
+# environment variables before running terraform:
+#   export TF_VAR_agent_role_id=$(terraform -chdir=../20-security-vault-approle output -raw role_id)
+#   export TF_VAR_agent_secret_id=$(terraform -chdir=../20-security-vault-approle output -raw secret_id)
+
+# Copy the current values from the repo's .env file.
+brave_api_key        = "your-brave-search-api-key"
+webui_secret_key     = "your-open-webui-secret-key"
+webui_admin_password = "your-open-webui-admin-password"
+searxng_secret       = "your-searxng-secret"
+openai_api_keys      = "your-openai-compat-api-key"
+cloudflare_api_token = "your-cloudflare-api-token"

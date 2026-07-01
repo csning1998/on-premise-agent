@@ -46,6 +46,11 @@ runner-config/
 ollama_data/
 open-webui_data/
 
+# HashiCorp Vault (Podman bootstrapper)
+vault/data/
+vault/tls/
+vault/keys/
+
 # Logs
 *.log
 
