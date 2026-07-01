@@ -18,8 +18,10 @@ from pipelines.workflows.deep_think_agent.agents import (
 from pipelines.workflows.deep_think_agent.agents import _build_finalizer_prompt
 from pipelines.workflows.deep_think_agent.agents import _build_keywords_prompt
 from pipelines.workflows.deep_think_agent.agents import _build_logic_prompt
+from pipelines.workflows.deep_think_agent.agents import _build_relevance_prompt
 from pipelines.workflows.deep_think_agent.agents import _strip_markdown
 from pipelines.workflows.deep_think_agent.agents import clean_keywords
+from pipelines.workflows.deep_think_agent.agents import parse_relevance_verdicts
 from pipelines.workflows.deep_think_agent.agents import parse_search_queries
 from pipelines.workflows.deep_think_agent.agents import run_contrarian
 from pipelines.workflows.deep_think_agent.agents import run_coordinator
@@ -78,6 +80,71 @@ def test_build_keywords_prompt():
     prompt = _build_keywords_prompt("my query")
     assert prompt.endswith("my query")
     assert "NO_SEARCH" in prompt
+
+
+def test_build_relevance_prompt():
+    """Tests _build_relevance_prompt lists candidates as a numbered block."""
+    candidates = [
+        {"url": "http://a.com", "content": "alpha content"},
+        {"url": "http://b.com", "content": "bravo content"},
+    ]
+    prompt = _build_relevance_prompt("my query", candidates)
+    assert "my query" in prompt
+    assert "1. alpha content" in prompt
+    assert "2. bravo content" in prompt
+    assert "YES" in prompt
+    assert "NO" in prompt
+
+
+def test_build_relevance_prompt_truncates_long_content():
+    """Tests _build_relevance_prompt caps each candidate at 300 characters."""
+    candidates = [{"url": "http://a.com", "content": "x" * 500}]
+    prompt = _build_relevance_prompt("my query", candidates)
+    assert "x" * 300 in prompt
+    assert "x" * 301 not in prompt
+
+
+def test_parse_relevance_verdicts_filters_no():
+    """Tests parse_relevance_verdicts keeps only YES-judged candidates."""
+    candidates = [
+        {"url": "http://a.com", "content": "alpha"},
+        {"url": "http://b.com", "content": "bravo"},
+        {"url": "http://c.com", "content": "charlie"},
+    ]
+    result = parse_relevance_verdicts("1: YES\n2: NO\n3: YES", candidates)
+    assert result == [candidates[0], candidates[2]]
+
+
+def test_parse_relevance_verdicts_all_no_returns_empty():
+    """Tests parse_relevance_verdicts can legitimately return an empty list."""
+    candidates = [{"url": "http://a.com", "content": "alpha"}]
+    assert parse_relevance_verdicts("1: NO", candidates) == []
+
+
+def test_parse_relevance_verdicts_count_mismatch_fails_open():
+    """Tests parse_relevance_verdicts fails open on a verdict count mismatch."""
+    candidates = [
+        {"url": "http://a.com", "content": "alpha"},
+        {"url": "http://b.com", "content": "bravo"},
+    ]
+    assert parse_relevance_verdicts("1: YES", candidates) == candidates
+    assert (
+        parse_relevance_verdicts("not a verdict line", candidates) == candidates
+    )
+
+
+def test_parse_relevance_verdicts_out_of_range_index_fails_open():
+    """Tests parse_relevance_verdicts fails open on an out-of-range index.
+
+    A matching verdict count with a hallucinated out-of-range index (e.g.
+    the model skips a real item but adds a spurious extra one) must not be
+    mistaken for a clean parse, since candidates[i] would then KeyError.
+    """
+    candidates = [
+        {"url": f"http://{i}.com", "content": str(i)} for i in range(3)
+    ]
+    text = "1: YES\n2: NO\n5: YES"
+    assert parse_relevance_verdicts(text, candidates) == candidates
 
 
 def test_build_align_prompt():
@@ -232,7 +299,7 @@ async def test_gather_researcher_summaries_returns_source_urls():
     mock_searxng = MagicMock(spec=SearxngClient)
 
     mock_ollama.async_generate = AsyncMock(
-        side_effect=["query alpha beta", "batch summary"]
+        side_effect=["query alpha beta", "1: YES", "batch summary"]
     )
     mock_searxng.search = AsyncMock(
         return_value=[{"url": "http://source.com", "content": "content"}]
@@ -255,8 +322,10 @@ async def test_gather_researcher_summaries_returns_source_urls():
     assert result.summaries == ["batch summary"]
     assert result.source_urls == ["http://source.com"]
     keywords_model = mock_ollama.async_generate.call_args_list[0][0][0]
-    align_model = mock_ollama.async_generate.call_args_list[1][0][0]
+    relevance_model = mock_ollama.async_generate.call_args_list[1][0][0]
+    align_model = mock_ollama.async_generate.call_args_list[2][0][0]
     assert keywords_model == "e2b-model"
+    assert relevance_model == "e2b-model"
     assert align_model == "e4b-model"
 
 
@@ -269,6 +338,7 @@ async def test_run_researcher_success():
     mock_ollama.async_generate = AsyncMock(
         side_effect=[
             "query alpha beta gamma",
+            "1: YES",
             "batch summary",
             "aggregated result",
         ]
@@ -288,13 +358,13 @@ async def test_run_researcher_success():
         "2026-06-29",
     )
     assert res == "aggregated result"
-    assert mock_ollama.async_generate.call_count == 3
+    assert mock_ollama.async_generate.call_count == 4
     mock_searxng.search.assert_called_once()
     keywords_model = mock_ollama.async_generate.call_args_list[0][0][0]
-    align_model = mock_ollama.async_generate.call_args_list[1][0][0]
+    align_model = mock_ollama.async_generate.call_args_list[2][0][0]
     assert keywords_model == "e2b-model"
     assert align_model == "e4b-model"
-    align_prompt = mock_ollama.async_generate.call_args_list[1][0][1]
+    align_prompt = mock_ollama.async_generate.call_args_list[2][0][1]
     assert "2026-06-29" in align_prompt
     assert "user-query" in align_prompt
     assert "cite its URL" in align_prompt
@@ -310,6 +380,7 @@ async def test_run_researcher_with_brave_client():
     mock_ollama.async_generate = AsyncMock(
         side_effect=[
             "query alpha beta gamma",
+            "1: YES\n2: YES",
             "merged summary",
             "aggregated result",
         ]
@@ -334,10 +405,10 @@ async def test_run_researcher_with_brave_client():
         "2026-06-29",
     )
     assert res == "aggregated result"
-    assert mock_ollama.async_generate.call_count == 3
+    assert mock_ollama.async_generate.call_count == 4
     mock_searxng.search.assert_called_once()
     mock_brave.search.assert_called_once()
-    align_prompt = mock_ollama.async_generate.call_args_list[1][0][1]
+    align_prompt = mock_ollama.async_generate.call_args_list[2][0][1]
     assert "http://searxng.com" in align_prompt
     assert "http://brave.com" in align_prompt
 

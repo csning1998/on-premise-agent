@@ -16,6 +16,8 @@ PROSE_ONLY_INSTRUCTION = (
     "as a full sentence within continuous paragraphs.\n"
 )
 
+MAX_CANDIDATES_PER_QUERY = 10
+
 
 class _Sentinel(Enum):
     NO_FACTS_FOUND = "NO_FACTS_FOUND"
@@ -79,6 +81,39 @@ def clean_keywords(text: str) -> str:
     text = re.sub(r"[\"\'\[\]\(\)]", "", text)
     words = re.findall(r"\w+", text)
     return " ".join(words[:8]).strip()
+
+
+def _build_relevance_prompt(user_message: str, candidates: list[dict]) -> str:
+    listed = "\n".join(
+        f"{i}. {c.get('content', '')[:300]}"
+        for i, c in enumerate(candidates, start=1)
+    )
+    return (
+        f"Query: {user_message}\n"
+        "For each numbered search result below, judge whether it is "
+        "relevant to the query topic. Respond with exactly one line per "
+        "item, in the format 'N: YES' or 'N: NO', matching the item "
+        "number. Do not add any other text.\n"
+        f"{listed}"
+    )
+
+
+def parse_relevance_verdicts(text: str, candidates: list[dict]) -> list[dict]:
+    """Filters candidates by parsed YES/NO verdicts.
+
+    Falls back to returning all candidates unfiltered when the verdict
+    count does not match the candidate count, since a parse failure should
+    not be able to silently discard genuine search results.
+    """
+    verdicts: dict[int, bool] = {}
+    for line in text.splitlines():
+        match = re.match(r"\s*(\d+)\s*[:.]\s*(YES|NO)", line, re.IGNORECASE)
+        if match:
+            verdicts[int(match.group(1))] = match.group(2).upper() == "YES"
+    n = len(candidates)
+    if len(verdicts) != n or not all(1 <= k <= n for k in verdicts):
+        return candidates
+    return [c for i, c in enumerate(candidates, start=1) if verdicts[i]]
 
 
 def parse_search_queries(text: str) -> list[str]:
@@ -304,9 +339,11 @@ async def gather_researcher_summaries(
         )
 
         n = len(queries)
-        align_tasks = []
         all_source_urls: list[str] = []
         global_seen: set[str] = set()
+        candidates_by_query: dict[int, list[dict]] = {}
+        relevance_indices: list[int] = []
+        relevance_coros = []
 
         for i in range(n):
             merged: list[dict] = []
@@ -327,9 +364,39 @@ async def gather_researcher_summaries(
                             all_source_urls.append(url)
             if not merged:
                 continue
+            candidates = merged[:MAX_CANDIDATES_PER_QUERY]
+            candidates_by_query[i] = candidates
+            relevance_indices.append(i)
+            relevance_coros.append(
+                ollama_client.async_generate(
+                    gemma_e2b_model,
+                    _build_relevance_prompt(user_message, candidates),
+                )
+            )
+
+        if not relevance_indices:
+            return NO_FACTS_FOUND
+
+        relevance_results = await asyncio.gather(
+            *relevance_coros, return_exceptions=True
+        )
+
+        align_tasks = []
+        for i, relevance_text in zip(relevance_indices, relevance_results):
+            candidates = candidates_by_query[i]
+            if isinstance(relevance_text, BaseException):
+                print(
+                    f"Relevance filter failed for query index {i}, "
+                    f"keeping all candidates: {relevance_text!r}"
+                )
+                filtered = candidates
+            else:
+                filtered = parse_relevance_verdicts(relevance_text, candidates)
+            if not filtered:
+                continue
             facts = "\n".join(
                 f"Source: {r.get('url', '')}\nContent: {r.get('content', '')}"
-                for r in merged[:10]
+                for r in filtered
             )
             align_tasks.append(
                 ollama_client.async_generate(

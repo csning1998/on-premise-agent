@@ -32,6 +32,7 @@ force-single-line = true
 lines-after-imports = 2
 
 [dependency-groups]
-dev = [
-    "ruff>=0.15.20",
-]
+dev = ["ruff>=0.15.20"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

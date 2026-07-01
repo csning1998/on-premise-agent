@@ -140,6 +140,45 @@ services:
       - PIPELINES_DIR=/app/pipelines/workflows
     restart: unless-stopped
 
+  openclaw-gateway:
+    image: ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION}
+    container_name: openclaw-gateway
+    user: "${HOST_UID}:${HOST_GID}"
+    networks:
+      - rag-network
+    volumes:
+      - ./openclaw/openclaw.json:/home/node/.openclaw/openclaw.json:z
+      - ./openclaw_data/workspace:/home/node/.openclaw/workspace:z
+      - ./openclaw_data/auth-profile-secrets:/home/node/.config/openclaw:z
+    environment:
+      - OPENCLAW_STATE_DIR=/home/node/.openclaw
+      - OPENCLAW_CONFIG_PATH=/home/node/.openclaw/openclaw.json
+      - OPENCLAW_WORKSPACE_DIR=/home/node/.openclaw/workspace
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+  openclaw-cli:
+    image: ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION}
+    container_name: openclaw-cli
+    entrypoint: ["node", "dist/index.js"]
+    network_mode: "service:openclaw-gateway"
+    user: "${HOST_UID}:${HOST_GID}"
+    volumes:
+      - ./openclaw/openclaw.json:/home/node/.openclaw/openclaw.json:z
+      - ./openclaw_data/workspace:/home/node/.openclaw/workspace:z
+      - ./openclaw_data/auth-profile-secrets:/home/node/.config/openclaw:z
+    environment:
+      - OPENCLAW_STATE_DIR=/home/node/.openclaw
+      - OPENCLAW_CONFIG_PATH=/home/node/.openclaw/openclaw.json
+      - OPENCLAW_WORKSPACE_DIR=/home/node/.openclaw/workspace
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
+    stdin_open: true
+    tty: true
+    depends_on:
+      - openclaw-gateway
+
 networks:
   rag-network:
     driver: bridge

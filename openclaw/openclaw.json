@@ -1,0 +1,57 @@
+{
+    "gateway": {
+        "mode": "local"
+    },
+    "models": {
+        "providers": {
+            "ollama": {
+                "baseUrl": "http://ollama:11434",
+                "apiKey": "ollama-local",
+                "api": "ollama",
+                "timeoutSeconds": 300,
+                "models": [
+                    {
+                        "id": "gemma4:E4B-it-qat",
+                        "name": "gemma4:E4B-it-qat",
+                        "input": [
+                            "text"
+                        ],
+                        "params": {
+                            "num_ctx": 8192,
+                            "keep_alive": "15m"
+                        }
+                    },
+                    {
+                        "id": "qwen3:8b-q4_K_M",
+                        "name": "qwen3:8b-q4_K_M",
+                        "input": [
+                            "text"
+                        ],
+                        "params": {
+                            "num_ctx": 8192,
+                            "keep_alive": "15m"
+                        }
+                    },
+                    {
+                        "id": "hermes3:8b-llama3.1-q4_K_M",
+                        "name": "hermes3:8b-llama3.1-q4_K_M",
+                        "input": [
+                            "text"
+                        ],
+                        "params": {
+                            "num_ctx": 8192,
+                            "keep_alive": "15m"
+                        }
+                    }
+                ]
+            }
+        }
+    },
+    "agents": {
+        "defaults": {
+            "model": {
+                "primary": "ollama/gemma4:E4B-it-qat"
+            }
+        }
+    }
+}

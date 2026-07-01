@@ -45,6 +45,7 @@ runner-config/
 # Data Directories
 ollama_data/
 open-webui_data/
+openclaw_data/
 
 # HashiCorp Vault (Podman bootstrapper)
 vault/data/
