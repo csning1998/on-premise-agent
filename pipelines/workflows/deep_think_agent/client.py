@@ -73,8 +73,10 @@ class OllamaClient:
                     if chunk and not chunk.get("done", False):
                         yield chunk.get("response", "")
         except requests.exceptions.RequestException as e:
-            print(f"Stream generate failed. Requested model was: '{model}'")
-            yield f"Error: {e}"
+            print(
+                f"Stream generate failed: {e}. Requested model was: '{model}'"
+            )
+            yield "ERROR: Agent timeout or connection failure."
 
 
 class SearxngClient:

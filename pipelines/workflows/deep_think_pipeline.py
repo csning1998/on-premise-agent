@@ -8,7 +8,6 @@ Requires Python 3.11+ for asyncio.Runner.
 import asyncio
 import datetime
 import os
-import re
 from typing import Any
 from typing import Callable
 from typing import Coroutine
@@ -31,6 +30,7 @@ from pipelines.workflows.deep_think_agent.agents import (
 )
 from pipelines.workflows.deep_think_agent.agents import _build_finalizer_prompt
 from pipelines.workflows.deep_think_agent.agents import _build_logic_prompt
+from pipelines.workflows.deep_think_agent.agents import _strip_markdown
 from pipelines.workflows.deep_think_agent.agents import (
     gather_researcher_summaries,
 )
@@ -39,14 +39,6 @@ from pipelines.workflows.deep_think_agent.client import OllamaClient
 from pipelines.workflows.deep_think_agent.client import SearxngClient
 from pipelines.workflows.deep_think_agent.config import OLLAMA_BASE_URL
 from pipelines.workflows.deep_think_agent.config import SEARXNG_BASE_URL
-
-
-def _strip_markdown(text: str) -> str:
-    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
-    text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
-    text = re.sub(r"```[^\n]*\n[\s\S]*?```", "", text)
-    text = re.sub(r"[\U0001F300-\U0001FAFF\U00002600-\U000027BF︀-️‍]+", "", text)
-    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 class Pipeline:
@@ -69,6 +61,10 @@ class Pipeline:
         searxng_url: str = Field(
             default=SEARXNG_BASE_URL,
             description="Base URL for the SearXNG API.",
+        )
+        gemma_e2b_model: str = Field(
+            default="gemma4:e2b-it-qat",
+            description="Model identifier for Coordinator and Keywords.",
         )
         gemma_e4b_model: str = Field(
             default="gemma4:E4B-it-qat",
@@ -138,7 +134,7 @@ class Pipeline:
                 yield "Coordinator:\n\n"
                 coordinator_chunks: list[str] = []
                 for chunk in ollama_client.stream_generate(
-                    self.valves.gemma_e4b_model,
+                    self.valves.gemma_e2b_model,
                     _build_coordinator_prompt(user_message),
                 ):
                     yield chunk
@@ -154,6 +150,7 @@ class Pipeline:
                         ollama_client,
                         searxng_client,
                         brave_client,
+                        self.valves.gemma_e2b_model,
                         self.valves.gemma_e4b_model,
                         user_message,
                         today,

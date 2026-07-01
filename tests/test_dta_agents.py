@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from pipelines.workflows.deep_think_agent.agents import NO_FACTS_FOUND
+from pipelines.workflows.deep_think_agent.agents import PROSE_ONLY_INSTRUCTION
 from pipelines.workflows.deep_think_agent.agents import AgentOutputs
 from pipelines.workflows.deep_think_agent.agents import ResearchSummaries
 from pipelines.workflows.deep_think_agent.agents import _build_aggregate_prompt
@@ -17,6 +18,7 @@ from pipelines.workflows.deep_think_agent.agents import (
 from pipelines.workflows.deep_think_agent.agents import _build_finalizer_prompt
 from pipelines.workflows.deep_think_agent.agents import _build_keywords_prompt
 from pipelines.workflows.deep_think_agent.agents import _build_logic_prompt
+from pipelines.workflows.deep_think_agent.agents import _strip_markdown
 from pipelines.workflows.deep_think_agent.agents import clean_keywords
 from pipelines.workflows.deep_think_agent.agents import parse_search_queries
 from pipelines.workflows.deep_think_agent.agents import run_contrarian
@@ -159,8 +161,11 @@ def test_build_finalizer_with_facts():
     prompt = _build_finalizer_prompt("2026-06-29", "query", outputs)
     assert "ALIGNED CONTEXT below contains facts" in prompt
     assert "verified ground truth" in prompt
-    assert "use the URLs from VERIFIED_SOURCES" in prompt
     assert "training knowledge" not in prompt
+    # No source_urls means no VERIFIED_SOURCES block, so no citation
+    # instruction should be injected either.
+    assert "VERIFIED_SOURCES" not in prompt
+    assert "Format every citation as a markdown link" not in prompt
 
 
 def test_build_finalizer_with_source_urls():
@@ -176,6 +181,13 @@ def test_build_finalizer_with_source_urls():
     assert "VERIFIED_SOURCES" in prompt
     assert "https://example.com/a" in prompt
     assert "https://example.com/b" in prompt
+    assert "Format every citation as a markdown link" in prompt
+    # The citation format instruction must appear after the URL list, not
+    # before, so the model sees the real URLs before being told how to
+    # format a citation around them.
+    assert prompt.index("https://example.com/b") < prompt.index(
+        "Format every citation as a markdown link"
+    )
 
 
 def test_agent_outputs_immutability():
@@ -208,7 +220,8 @@ async def test_run_coordinator():
         "Do NOT describe methodology or data systems. "
         "Do NOT explain limitations or what data you would need. "
         "Respond in English only. DO NOT use any emojis. "
-        "Query: hello",
+        + PROSE_ONLY_INSTRUCTION
+        + "Query: hello",
     )
 
 
@@ -233,6 +246,7 @@ async def test_gather_researcher_summaries_returns_source_urls():
         mock_ollama,
         mock_searxng,
         None,
+        "e2b-model",
         "e4b-model",
         "user-query",
         "2026-06-30",
@@ -240,6 +254,10 @@ async def test_gather_researcher_summaries_returns_source_urls():
     assert isinstance(result, ResearchSummaries)
     assert result.summaries == ["batch summary"]
     assert result.source_urls == ["http://source.com"]
+    keywords_model = mock_ollama.async_generate.call_args_list[0][0][0]
+    align_model = mock_ollama.async_generate.call_args_list[1][0][0]
+    assert keywords_model == "e2b-model"
+    assert align_model == "e4b-model"
 
 
 @pytest.mark.asyncio
@@ -263,6 +281,7 @@ async def test_run_researcher_success():
         mock_ollama,
         mock_searxng,
         None,
+        "e2b-model",
         "e4b-model",
         "12b-model",
         "user-query",
@@ -271,6 +290,10 @@ async def test_run_researcher_success():
     assert res == "aggregated result"
     assert mock_ollama.async_generate.call_count == 3
     mock_searxng.search.assert_called_once()
+    keywords_model = mock_ollama.async_generate.call_args_list[0][0][0]
+    align_model = mock_ollama.async_generate.call_args_list[1][0][0]
+    assert keywords_model == "e2b-model"
+    assert align_model == "e4b-model"
     align_prompt = mock_ollama.async_generate.call_args_list[1][0][1]
     assert "2026-06-29" in align_prompt
     assert "user-query" in align_prompt
@@ -304,6 +327,7 @@ async def test_run_researcher_with_brave_client():
         mock_ollama,
         mock_searxng,
         mock_brave,
+        "e2b-model",
         "e4b-model",
         "12b-model",
         "user-query",
@@ -330,6 +354,7 @@ async def test_run_researcher_empty_results():
         mock_ollama,
         mock_searxng,
         None,
+        "e2b-model",
         "e4b-model",
         "12b-model",
         "user-query",
@@ -351,6 +376,7 @@ async def test_run_researcher_no_search_keyword():
         mock_ollama,
         mock_searxng,
         None,
+        "e2b-model",
         "e4b-model",
         "12b-model",
         "user-query",
@@ -373,6 +399,7 @@ async def test_run_researcher_searxng_exception():
         mock_ollama,
         mock_searxng,
         None,
+        "e2b-model",
         "e4b-model",
         "12b-model",
         "user-query",
@@ -398,7 +425,7 @@ async def test_run_logic():
         "(2) internal contradictions between sources, "
         "(3) assumptions presented as verified facts. "
         "If no weaknesses exist, state so explicitly. "
-        "DO NOT use any emojis.",
+        "DO NOT use any emojis. " + PROSE_ONLY_INSTRUCTION,
     )
 
 
@@ -416,7 +443,7 @@ async def test_run_logic_no_facts():
         "No web search results are available. "
         "Reason from general knowledge only and note the absence "
         "of current data. "
-        "DO NOT use any emojis.",
+        "DO NOT use any emojis. " + PROSE_ONLY_INSTRUCTION,
     )
 
 
@@ -436,7 +463,7 @@ async def test_run_contrarian():
         "Do NOT repeat or agree with any of the researcher's claims. "
         "For each major conclusion, provide: the opposing view, "
         "missing evidence, or an alternative explanation. "
-        "DO NOT use any emojis.",
+        "DO NOT use any emojis. " + PROSE_ONLY_INSTRUCTION,
     )
 
 
@@ -456,5 +483,79 @@ async def test_run_contrarian_no_facts():
         "e4b-model",
         "List counter-arguments for query: query\n"
         "No web search results are available. "
-        "Reason from general knowledge only.\nDO NOT use any emojis.",
+        "Reason from general knowledge only.\nDO NOT use any emojis. "
+        + PROSE_ONLY_INSTRUCTION,
     )
+
+
+def test_strip_markdown_headers():
+    """Strips markdown headers of any level (1-6)."""
+    assert _strip_markdown("# Title\nbody") == "Title\nbody"
+    assert _strip_markdown("### Subheading\nbody") == "Subheading\nbody"
+
+
+def test_strip_markdown_bold():
+    """Unwraps bold text, keeping the inner content."""
+    assert _strip_markdown("This is **bold** text") == "This is bold text"
+
+
+def test_strip_markdown_code_fence():
+    """Removes fenced code blocks entirely, including the language tag."""
+    text = "before\n```python\nprint('x')\n```\nafter"
+    assert _strip_markdown(text) == "before\n\nafter"
+
+
+def test_strip_markdown_bullet_list():
+    """Strips bullet list markers (-, *, +), leaving plain lines."""
+    text = "- first point\n* second point\n+ third point"
+    assert _strip_markdown(text) == "first point\nsecond point\nthird point"
+
+
+def test_strip_markdown_numbered_list():
+    """Strips numbered list markers, leaving plain lines."""
+    text = "1. first point\n2. second point\n10. tenth point"
+    assert _strip_markdown(text) == "first point\nsecond point\ntenth point"
+
+
+def test_strip_markdown_emoji():
+    """Removes emoji characters from the covered Unicode ranges."""
+    assert _strip_markdown("Great news 🎉 today") == "Great news  today"
+
+
+def test_strip_markdown_collapses_blank_lines():
+    """Collapses 3+ consecutive newlines down to a single blank line."""
+    assert _strip_markdown("a\n\n\n\nb") == "a\n\nb"
+
+
+def test_strip_markdown_bold_spans_newline():
+    """Unwraps bold text even when the span crosses a line break."""
+    assert _strip_markdown("**term\ndefinition**") == "term\ndefinition"
+
+
+def test_strip_markdown_code_fence_ignores_inline_backticks():
+    """Strips a real fenced block without corrupting nearby prose.
+
+    Prose containing inline triple backticks must survive intact.
+    """
+    text = (
+        "Use the ```git``` command carefully.\n"
+        "Some unrelated prose continues.\n"
+        "```python\n"
+        "real_code()\n"
+        "```\n"
+        "Final remark."
+    )
+    result = _strip_markdown(text)
+    assert "```git```" in result
+    assert "Some unrelated prose continues." in result
+    assert "real_code()" not in result
+    assert "Final remark." in result
+
+
+def test_strip_markdown_numbered_prose_not_stripped():
+    """A prose sentence starting with a digit is not a one-item list.
+
+    A single isolated digit-dot line must not be mistaken for a list item.
+    """
+    text = "2. The study found significant results across all cohorts."
+    assert _strip_markdown(text) == text

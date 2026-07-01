@@ -10,6 +10,13 @@ from pipelines.workflows.deep_think_agent.client import OllamaClient
 from pipelines.workflows.deep_think_agent.client import SearxngClient
 
 
+PROSE_ONLY_INSTRUCTION = (
+    "Write in pure prose only. Do NOT use markdown headers, bold text, "
+    "code fences, bullet lists, or numbered lists. Express every point "
+    "as a full sentence within continuous paragraphs.\n"
+)
+
+
 class _Sentinel(Enum):
     NO_FACTS_FOUND = "NO_FACTS_FOUND"
 
@@ -32,6 +39,32 @@ class AgentOutputs(NamedTuple):
     logic: str
     contrarian: str
     source_urls: list[str]
+
+
+def _strip_numbered_list_block(match: re.Match) -> str:
+    return re.sub(r"^[ \t]*\d+\.\s+", "", match.group(0), flags=re.MULTILINE)
+
+
+def _strip_markdown(text: str) -> str:
+    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\*\*(.*?)\*\*", r"\1", text, flags=re.DOTALL)
+    text = re.sub(r"(?m)^```[^\n]*\n[\s\S]*?^```[ \t]*$", "", text)
+    text = re.sub(r"^[ \t]*[-*+]\s+", "", text, flags=re.MULTILINE)
+    # Only strip numbered markers when 2+ consecutive lines look like a list,
+    # so a prose sentence starting with a digit (e.g. "2. The study found...")
+    # is not mistaken for a single-item list.
+    text = re.sub(
+        r"(?:^[ \t]*\d+\.\s+.*(?:\n|$)){2,}",
+        _strip_numbered_list_block,
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r"[\U0001F300-\U0001FAFF\U00002600-\U000027BF\uFE00-\uFE0F\u200D]+",
+        "",
+        text,
+    )
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 def clean_keywords(text: str) -> str:
@@ -73,7 +106,8 @@ def _build_coordinator_prompt(user_message: str) -> str:
         "Do NOT describe methodology or data systems. "
         "Do NOT explain limitations or what data you would need. "
         "Respond in English only. DO NOT use any emojis. "
-        f"Query: {user_message}"
+        + PROSE_ONLY_INSTRUCTION
+        + f"Query: {user_message}"
     )
 
 
@@ -113,7 +147,8 @@ def _build_aggregate_prompt(
         "Merge them into a single coherent factual context, eliminating "
         "redundancy and preserving all unique information and source URL "
         "citations relevant to the user's query.\n"
-        f"{combined}"
+        + PROSE_ONLY_INSTRUCTION
+        + f"{combined}"
     )
 
 
@@ -125,7 +160,7 @@ def _build_logic_prompt(user_message: str, facts: str | _Sentinel) -> str:
             "No web search results are available. "
             "Reason from general knowledge only and "
             "note the absence of current data. "
-            "DO NOT use any emojis."
+            "DO NOT use any emojis. " + PROSE_ONLY_INSTRUCTION
         )
     return (
         f"You are a logic verifier. Query: {user_message}\n"
@@ -136,7 +171,7 @@ def _build_logic_prompt(user_message: str, facts: str | _Sentinel) -> str:
         "(2) internal contradictions between sources, "
         "(3) assumptions presented as verified facts. "
         "If no weaknesses exist, state so explicitly. "
-        "DO NOT use any emojis."
+        "DO NOT use any emojis. " + PROSE_ONLY_INSTRUCTION
     )
 
 
@@ -146,7 +181,8 @@ def _build_contrarian_prompt(user_message: str, facts: str | _Sentinel) -> str:
         return (
             f"List counter-arguments for query: {user_message}\n"
             "No web search results are available. "
-            "Reason from general knowledge only.\nDO NOT use any emojis."
+            "Reason from general knowledge only.\nDO NOT use any emojis. "
+            + PROSE_ONLY_INSTRUCTION
         )
     return (
         f"Query: {user_message}\n"
@@ -155,7 +191,7 @@ def _build_contrarian_prompt(user_message: str, facts: str | _Sentinel) -> str:
         "Do NOT repeat or agree with any of the researcher's claims. "
         "For each major conclusion, provide: the opposing view, "
         "missing evidence, or an alternative explanation. "
-        "DO NOT use any emojis."
+        "DO NOT use any emojis. " + PROSE_ONLY_INSTRUCTION
     )
 
 
@@ -170,6 +206,7 @@ def _build_finalizer_prompt(
         f"CONTRARIAN: {agent_outputs.contrarian}"
     )
 
+    citation_instruction = ""
     if agent_outputs.researcher is NO_FACTS_FOUND:
         facts_instruction = (
             "No real-time web search results are available for this query. "
@@ -185,8 +222,6 @@ def _build_finalizer_prompt(
             "synthesize a best-estimate answer based on the most credible "
             "evidence. Commit to the most likely correct answer; do not "
             "present all conflicting views equally without resolution. "
-            "When citing sources, use the URLs from VERIFIED_SOURCES. "
-            "Do not invent or generalize citations. "
         )
         if agent_outputs.source_urls:
             capped = agent_outputs.source_urls[:30]
@@ -195,6 +230,14 @@ def _build_finalizer_prompt(
                 "use these URLs when citing factual claims):\n"
                 + "\n".join(f"- {u}" for u in capped)
                 + "\n"
+            )
+            citation_instruction = (
+                "When citing sources, use only the URLs listed above in "
+                "VERIFIED_SOURCES. Do not invent or generalize citations. "
+                "Format every citation as a markdown link, "
+                "[descriptive label](URL), so it renders as clickable. "
+                "Never write a citation as plain bracketed text without the "
+                "URL, e.g. [Source, year] with no link is not acceptable. "
             )
         else:
             verified_sources = ""
@@ -207,9 +250,11 @@ def _build_finalizer_prompt(
         "Do NOT place your final answer inside the thinking process. "
         "Inside <think> tags, write in pure prose only. "
         "Do NOT use markdown headers (#, ##, ###), bold text (**), "
-        "or code fences (```) inside your thinking. "
+        "code fences (```), bullet lists, or numbered lists inside "
+        "your thinking. "
         + facts_instruction
         + verified_sources
+        + citation_instruction
         + "DO NOT use any emojis. \n"
         + f"<aligned_context>\n{aligned_context}\n</aligned_context>\n"
         f"<user_query>\n{user_message}\n</user_query>"
@@ -229,6 +274,7 @@ async def gather_researcher_summaries(
     ollama_client: OllamaClient,
     searxng_client: SearxngClient,
     brave_client: BraveClient | None,
+    gemma_e2b_model: str,
     gemma_e4b_model: str,
     user_message: str,
     today: str,
@@ -241,7 +287,7 @@ async def gather_researcher_summaries(
     search yields no usable results.
     """
     raw_queries = await ollama_client.async_generate(
-        gemma_e4b_model, _build_keywords_prompt(user_message)
+        gemma_e2b_model, _build_keywords_prompt(user_message)
     )
     queries = parse_search_queries(raw_queries)
 
@@ -315,6 +361,7 @@ async def run_researcher(
     ollama_client: OllamaClient,
     searxng_client: SearxngClient,
     brave_client: BraveClient | None,
+    gemma_e2b_model: str,
     gemma_e4b_model: str,
     gemma_12b_model: str,
     user_message: str,
@@ -330,6 +377,7 @@ async def run_researcher(
         ollama_client,
         searxng_client,
         brave_client,
+        gemma_e2b_model,
         gemma_e4b_model,
         user_message,
         today,

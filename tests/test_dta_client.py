@@ -88,7 +88,7 @@ def test_ollama_client_stream_generate_failure():
         gen = client.stream_generate("test-model", "test-prompt")
         results = list(gen)
         assert len(results) == 1
-        assert "Error: Request failed" in results[0]
+        assert results[0] == "ERROR: Agent timeout or connection failure."
         mock_post.assert_called_once()
 
 

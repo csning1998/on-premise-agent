@@ -43,6 +43,7 @@ services:
     container_name: ollama
     environment:
       - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-1}
     networks:
       - rag-network
     volumes:
