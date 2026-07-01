@@ -183,3 +183,19 @@ Please confirm whether the `/etc/cdi/nvidia.yaml` file contains the correct devi
 podman unshare chown -R 0:0 ./ollama_data ./open-webui_data
 chmod -R 775 ./ollama_data ./open-webui_data
 ```
+
+### C. Ruff Language Server Fails to Start After Cold Boot (Open VSX-based Editors)
+
+On editors that consume the Open VSX repackaged build of `ms-python.python` (e.g. Antigravity IDE, VSCodium), the Ruff extension delegates Python environment detection to `ms-python.vscode-python-envs`, which spawns a native binary at `python-env-tools/bin/pet`. In these repackaged builds, this binary is missing (`spawn .../pet ENOENT`), causing three 30-second timeout retries (~97s) before falling back to no interpreter. During this window, the Ruff Language Server does not start, so linting and format-on-save (`source.organizeImports.ruff`, `source.fixAll.ruff`) silently do nothing.
+
+This is a known upstream packaging defect, tracked at [microsoft/vscode-python#25820](https://github.com/microsoft/vscode-python/issues/25820).
+
+- **Workaround: bypass environment auto-detection by setting `ruff.interpreter` explicitly (absolute path required):**
+
+    ```json
+    {
+        "ruff.interpreter": ["/absolute/path/to/project/.venv/bin/python"]
+    }
+    ```
+
+- **Verify the fix:** reload the window, then check the `Ruff` output channel. A working startup logs `Found Ruff <version> at .../.venv/bin/ruff`; a stuck one stops at `Using Python Environments extension for Python environment detection`.

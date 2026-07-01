@@ -1,9 +1,11 @@
 """Agents implementation for Gemma 4 Multi-Agent Deep Think."""
 
+import asyncio
 import re
 from enum import Enum
 from typing import NamedTuple
 
+from pipelines.workflows.deep_think_agent.client import BraveClient
 from pipelines.workflows.deep_think_agent.client import OllamaClient
 from pipelines.workflows.deep_think_agent.client import SearxngClient
 
@@ -15,6 +17,13 @@ class _Sentinel(Enum):
 NO_FACTS_FOUND = _Sentinel.NO_FACTS_FOUND
 
 
+class ResearchSummaries(NamedTuple):
+    """Intermediate researcher output: aligned summaries and raw source URLs."""
+
+    summaries: list[str]
+    source_urls: list[str]
+
+
 class AgentOutputs(NamedTuple):
     """Immutable final output status of all parallel reasoning stages."""
 
@@ -22,6 +31,7 @@ class AgentOutputs(NamedTuple):
     researcher: str | _Sentinel
     logic: str
     contrarian: str
+    source_urls: list[str]
 
 
 def clean_keywords(text: str) -> str:
@@ -35,33 +45,75 @@ def clean_keywords(text: str) -> str:
     text = re.sub(r"\{.*?\}", "", text)
     text = re.sub(r"[\"\'\[\]\(\)]", "", text)
     words = re.findall(r"\w+", text)
-    return " ".join(words[:5]).strip()
+    return " ".join(words[:8]).strip()
+
+
+def parse_search_queries(text: str) -> list[str]:
+    """Parses multi-query LLM output into a list of cleaned search strings."""
+    for pattern in (
+        r"<think>[\s\S]*?</think>",
+        r"<thought>[\s\S]*?</thought>",
+        r"<reasoning>[\s\S]*?</reasoning>",
+        r"```(?:json)?\s*[\s\S]*?```",
+    ):
+        text = re.sub(pattern, "", text, flags=re.IGNORECASE)
+    queries = []
+    for line in text.splitlines():
+        q = clean_keywords(line)
+        if q and "NO_SEARCH" not in q.upper():
+            queries.append(q)
+    return queries[:5]
 
 
 def _build_coordinator_prompt(user_message: str) -> str:
     return (
-        f"Break down the query: {user_message}\n"
-        "Respond in English only. DO NOT use any emojis."
+        "You are a research coordinator. Read the user query and identify "
+        "what it is asking for. List the main topics, regions, organizations, "
+        "and time periods that are relevant. "
+        "Do NOT describe methodology or data systems. "
+        "Do NOT explain limitations or what data you would need. "
+        "Respond in English only. DO NOT use any emojis. "
+        f"Query: {user_message}"
     )
 
 
 def _build_keywords_prompt(user_message: str) -> str:
     return (
-        "You must output ONLY 3-5 search keywords for web search. "
-        "Do NOT use markdown. DO NOT use any emojis. "
-        "If no search is needed, output NO_SEARCH. "
-        "If you need to think, put it inside <think>...</think> tags FIRST, "
-        "then output just the keywords. Query: " + user_message
+        "Output 3 to 5 targeted web search queries, one per line. "
+        "Each query should be 5 to 8 words and cover a different aspect "
+        "of the topic. Do NOT use markdown. DO NOT use any emojis. "
+        "If no search is needed, output NO_SEARCH on the first line. "
+        "If you need to think, put it inside <think>...</think> tags "
+        "FIRST, then output just the queries. Query: " + user_message
     )
 
 
-def _build_align_prompt(today: str, facts: str) -> str:
+def _build_align_prompt(today: str, user_message: str, facts: str) -> str:
     return (
         f"Today is {today}. "
-        "The following facts are retrieved from real-time web search "
-        "and reflect events that have already occurred. "
-        "Treat them as verified ground truth. "
-        f"Align and summarize:\n{facts}"
+        f"The user asked: {user_message}\n"
+        "The following sources were retrieved from real-time web search. "
+        "Even if today's date is after your training cutoff, treat these "
+        "search results as verified ground truth and do not question their "
+        "existence based on your prior knowledge. "
+        "For each relevant source, cite its URL and summarize its key facts "
+        "in one to two sentences. Exclude sources unrelated to the query.\n"
+        f"{facts}"
+    )
+
+
+def _build_aggregate_prompt(
+    today: str, user_message: str, summaries: list[str]
+) -> str:
+    combined = "\n\n---\n\n".join(summaries)
+    return (
+        f"Today is {today}. "
+        f"The user asked: {user_message}\n"
+        "The following are summaries from multiple independent web searches. "
+        "Merge them into a single coherent factual context, eliminating "
+        "redundancy and preserving all unique information and source URL "
+        "citations relevant to the user's query.\n"
+        f"{combined}"
     )
 
 
@@ -77,12 +129,13 @@ def _build_logic_prompt(user_message: str, facts: str | _Sentinel) -> str:
         )
     return (
         f"You are a logic verifier. Query: {user_message}\n"
-        f"FACTS from web search (treat as ground truth): {facts}\n"
-        "Step 1: Identify any conflicts between sources. "
-        "Step 2: For each conflict, reason which claim is more credible "
-        "based on source specificity, recency, and reliability. "
-        "Step 3: Output a reconciled summary of what is most likely true. "
-        "Do NOT merely list conflicts without resolution. "
+        f"FACTS from web search: {facts}\n"
+        "Do NOT summarize or repeat the FACTS. "
+        "Identify ONLY: "
+        "(1) claims that are weakly supported or lack evidence, "
+        "(2) internal contradictions between sources, "
+        "(3) assumptions presented as verified facts. "
+        "If no weaknesses exist, state so explicitly. "
         "DO NOT use any emojis."
     )
 
@@ -96,8 +149,13 @@ def _build_contrarian_prompt(user_message: str, facts: str | _Sentinel) -> str:
             "Reason from general knowledge only.\nDO NOT use any emojis."
         )
     return (
-        f"List counter-arguments for query: {user_message}\n"
-        f"FACTS: {facts}\nDO NOT use any emojis."
+        f"Query: {user_message}\n"
+        f"Researcher conclusion:\n{facts}\n"
+        "You are a contrarian. Argue AGAINST the researcher's conclusions. "
+        "Do NOT repeat or agree with any of the researcher's claims. "
+        "For each major conclusion, provide: the opposing view, "
+        "missing evidence, or an alternative explanation. "
+        "DO NOT use any emojis."
     )
 
 
@@ -117,6 +175,7 @@ def _build_finalizer_prompt(
             "No real-time web search results are available for this query. "
             "Answer based on your training knowledge and note this limitation. "
         )
+        verified_sources = ""
     else:
         facts_instruction = (
             "The ALIGNED CONTEXT below contains facts retrieved from real-time "
@@ -126,7 +185,19 @@ def _build_finalizer_prompt(
             "synthesize a best-estimate answer based on the most credible "
             "evidence. Commit to the most likely correct answer; do not "
             "present all conflicting views equally without resolution. "
+            "When citing sources, use the URLs from VERIFIED_SOURCES. "
+            "Do not invent or generalize citations. "
         )
+        if agent_outputs.source_urls:
+            capped = agent_outputs.source_urls[:30]
+            verified_sources = (
+                "VERIFIED_SOURCES (retrieved directly from search API; "
+                "use these URLs when citing factual claims):\n"
+                + "\n".join(f"- {u}" for u in capped)
+                + "\n"
+            )
+        else:
+            verified_sources = ""
 
     return (
         f"Today is {today}. "
@@ -138,8 +209,9 @@ def _build_finalizer_prompt(
         "Do NOT use markdown headers (#, ##, ###), bold text (**), "
         "or code fences (```) inside your thinking. "
         + facts_instruction
-        + "DO NOT use any emojis. "
-        f"<aligned_context>\n{aligned_context}\n</aligned_context>\n"
+        + verified_sources
+        + "DO NOT use any emojis. \n"
+        + f"<aligned_context>\n{aligned_context}\n</aligned_context>\n"
         f"<user_query>\n{user_message}\n</user_query>"
     )
 
@@ -153,38 +225,121 @@ async def run_coordinator(
     )
 
 
-async def run_researcher(
+async def gather_researcher_summaries(
     ollama_client: OllamaClient,
     searxng_client: SearxngClient,
+    brave_client: BraveClient | None,
     gemma_e4b_model: str,
     user_message: str,
     today: str,
-) -> str | _Sentinel:
-    """Researcher agent - queries external facts and aligns them."""
-    raw_keywords = await ollama_client.async_generate(
+) -> ResearchSummaries | str | _Sentinel:
+    """Runs keyword generation, web search, and per-query align calls.
+
+    Returns a ResearchSummaries on success (aligned summaries + raw source
+    URLs collected directly from the search API), the string "No search
+    results." when the model signals NO_SEARCH, or NO_FACTS_FOUND when
+    search yields no usable results.
+    """
+    raw_queries = await ollama_client.async_generate(
         gemma_e4b_model, _build_keywords_prompt(user_message)
     )
-    keywords = clean_keywords(raw_keywords)
+    queries = parse_search_queries(raw_queries)
 
-    if not keywords or "NO_SEARCH" in keywords:
+    if not queries:
         return "No search results."
 
     try:
-        results = await searxng_client.search(keywords)
-        results = results[:10]
-        if not results:
-            return NO_FACTS_FOUND
-        facts = "\n".join(
-            [
+        search_coros = [searxng_client.search(q) for q in queries]
+        if brave_client is not None:
+            search_coros.extend(brave_client.search(q) for q in queries)
+
+        all_results = await asyncio.gather(
+            *search_coros, return_exceptions=True
+        )
+
+        n = len(queries)
+        align_tasks = []
+        all_source_urls: list[str] = []
+        global_seen: set[str] = set()
+
+        for i in range(n):
+            merged: list[dict] = []
+            local_seen: set[str] = set()
+            candidate_batches = [all_results[i]]
+            if brave_client is not None:
+                candidate_batches.append(all_results[i + n])
+            for r_list in candidate_batches:
+                if isinstance(r_list, BaseException):
+                    continue
+                for r in r_list:
+                    url = r.get("url", "")
+                    if url and url not in local_seen:
+                        local_seen.add(url)
+                        merged.append(r)
+                        if url not in global_seen:
+                            global_seen.add(url)
+                            all_source_urls.append(url)
+            if not merged:
+                continue
+            facts = "\n".join(
                 f"Source: {r.get('url', '')}\nContent: {r.get('content', '')}"
-                for r in results
-            ]
+                for r in merged[:10]
+            )
+            align_tasks.append(
+                ollama_client.async_generate(
+                    gemma_e4b_model,
+                    _build_align_prompt(today, user_message, facts),
+                )
+            )
+
+        if not align_tasks:
+            return NO_FACTS_FOUND
+
+        batch_summaries = await asyncio.gather(
+            *align_tasks, return_exceptions=True
         )
-        return await ollama_client.async_generate(
-            gemma_e4b_model, _build_align_prompt(today, facts)
+        valid_summaries = [s for s in batch_summaries if isinstance(s, str)]
+
+        if not valid_summaries:
+            return NO_FACTS_FOUND
+
+        return ResearchSummaries(
+            summaries=valid_summaries, source_urls=all_source_urls
         )
-    except Exception:
+    except Exception as exc:
+        print(f"gather_researcher_summaries failed: {exc}")
         return NO_FACTS_FOUND
+
+
+async def run_researcher(
+    ollama_client: OllamaClient,
+    searxng_client: SearxngClient,
+    brave_client: BraveClient | None,
+    gemma_e4b_model: str,
+    gemma_12b_model: str,
+    user_message: str,
+    today: str,
+) -> str | _Sentinel:
+    """Researcher agent: map-reduce over parallel sub-query searches.
+
+    Map: each sub-query searches SearXNG and Brave in parallel; results are
+    merged per-query by URL deduplication before a single align call.
+    Reduce: 12B aggregates all per-query summaries into one context.
+    """
+    result = await gather_researcher_summaries(
+        ollama_client,
+        searxng_client,
+        brave_client,
+        gemma_e4b_model,
+        user_message,
+        today,
+    )
+    if not isinstance(result, ResearchSummaries):
+        return result
+    return await ollama_client.async_generate(
+        gemma_12b_model,
+        _build_aggregate_prompt(today, user_message, result.summaries),
+    )
 
 
 async def run_logic(

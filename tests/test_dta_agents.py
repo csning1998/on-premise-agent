@@ -7,6 +7,8 @@ import pytest
 
 from pipelines.workflows.deep_think_agent.agents import NO_FACTS_FOUND
 from pipelines.workflows.deep_think_agent.agents import AgentOutputs
+from pipelines.workflows.deep_think_agent.agents import ResearchSummaries
+from pipelines.workflows.deep_think_agent.agents import _build_aggregate_prompt
 from pipelines.workflows.deep_think_agent.agents import _build_align_prompt
 from pipelines.workflows.deep_think_agent.agents import _build_contrarian_prompt
 from pipelines.workflows.deep_think_agent.agents import (
@@ -16,10 +18,12 @@ from pipelines.workflows.deep_think_agent.agents import _build_finalizer_prompt
 from pipelines.workflows.deep_think_agent.agents import _build_keywords_prompt
 from pipelines.workflows.deep_think_agent.agents import _build_logic_prompt
 from pipelines.workflows.deep_think_agent.agents import clean_keywords
+from pipelines.workflows.deep_think_agent.agents import parse_search_queries
 from pipelines.workflows.deep_think_agent.agents import run_contrarian
 from pipelines.workflows.deep_think_agent.agents import run_coordinator
 from pipelines.workflows.deep_think_agent.agents import run_logic
 from pipelines.workflows.deep_think_agent.agents import run_researcher
+from pipelines.workflows.deep_think_agent.client import BraveClient
 from pipelines.workflows.deep_think_agent.client import OllamaClient
 from pipelines.workflows.deep_think_agent.client import SearxngClient
 
@@ -38,9 +42,23 @@ def test_clean_keywords():
     )
 
     assert (
-        clean_keywords("one two three four five six seven")
-        == "one two three four five"
+        clean_keywords("one two three four five six seven eight nine")
+        == "one two three four five six seven eight"
     )
+
+
+def test_parse_search_queries():
+    """Tests parse_search_queries with multi-line and edge cases."""
+    result = parse_search_queries(
+        "<think>planning</think>\nalpha bravo charlie 2026\ndelta echo foxtrot"
+    )
+    assert result == ["alpha bravo charlie 2026", "delta echo foxtrot"]
+
+    assert parse_search_queries("NO_SEARCH") == []
+    assert parse_search_queries("") == []
+
+    long_input = "\n".join(f"query topic {i}" for i in range(8))
+    assert len(parse_search_queries(long_input)) == 5
 
 
 def test_build_coordinator_prompt():
@@ -49,6 +67,8 @@ def test_build_coordinator_prompt():
     assert "my query" in prompt
     assert "Respond in English only" in prompt
     assert "DO NOT use any emojis" in prompt
+    assert "Do NOT describe methodology" in prompt
+    assert "Do NOT explain limitations" in prompt
 
 
 def test_build_keywords_prompt():
@@ -60,18 +80,33 @@ def test_build_keywords_prompt():
 
 def test_build_align_prompt():
     """Tests _build_align_prompt."""
-    prompt = _build_align_prompt("2026-06-29", "fact A\nfact B")
+    prompt = _build_align_prompt("2026-06-29", "my query", "fact A\nfact B")
     assert "2026-06-29" in prompt
-    assert "verified ground truth" in prompt
+    assert "my query" in prompt
     assert "fact A\nfact B" in prompt
+    assert "cite its URL" in prompt
+    assert "training cutoff" in prompt
+
+
+def test_build_aggregate_prompt():
+    """Tests _build_aggregate_prompt."""
+    prompt = _build_aggregate_prompt(
+        "2026-06-30", "my query", ["summary one", "summary two"]
+    )
+    assert "2026-06-30" in prompt
+    assert "my query" in prompt
+    assert "summary one" in prompt
+    assert "summary two" in prompt
 
 
 def test_build_logic_prompt_with_facts():
     """Tests _build_logic_prompt with facts."""
     prompt = _build_logic_prompt("query", "some facts")
     assert "FACTS from web search" in prompt
-    assert "Step 1:" in prompt
+    assert "weakly supported" in prompt
+    assert "Do NOT summarize" in prompt
     assert "query" in prompt
+    assert "Step 1:" not in prompt
 
 
 def test_build_logic_prompt_no_facts():
@@ -84,8 +119,11 @@ def test_build_logic_prompt_no_facts():
 def test_build_contrarian_prompt_with_facts():
     """Tests _build_contrarian_prompt with facts."""
     prompt = _build_contrarian_prompt("query", "some facts")
-    assert "FACTS: some facts" in prompt
+    assert "Researcher conclusion" in prompt
+    assert "Argue AGAINST" in prompt
+    assert "some facts" in prompt
     assert "DO NOT use any emojis" in prompt
+    assert "FACTS: some facts" not in prompt
 
 
 def test_build_contrarian_prompt_no_facts():
@@ -98,7 +136,11 @@ def test_build_contrarian_prompt_no_facts():
 def test_build_finalizer_no_facts():
     """Finalizer uses training-knowledge framing for NO_FACTS_FOUND."""
     outputs = AgentOutputs(
-        coordinator="c", researcher=NO_FACTS_FOUND, logic="l", contrarian="co"
+        coordinator="c",
+        researcher=NO_FACTS_FOUND,
+        logic="l",
+        contrarian="co",
+        source_urls=[],
     )
     prompt = _build_finalizer_prompt("2026-06-29", "query", outputs)
     assert "training knowledge" in prompt
@@ -112,17 +154,38 @@ def test_build_finalizer_with_facts():
         researcher="aligned fact data",
         logic="l",
         contrarian="co",
+        source_urls=[],
     )
     prompt = _build_finalizer_prompt("2026-06-29", "query", outputs)
     assert "ALIGNED CONTEXT below contains facts" in prompt
     assert "verified ground truth" in prompt
+    assert "use the URLs from VERIFIED_SOURCES" in prompt
     assert "training knowledge" not in prompt
+
+
+def test_build_finalizer_with_source_urls():
+    """Finalizer injects VERIFIED_SOURCES when source_urls is non-empty."""
+    outputs = AgentOutputs(
+        coordinator="c",
+        researcher="some facts",
+        logic="l",
+        contrarian="co",
+        source_urls=["https://example.com/a", "https://example.com/b"],
+    )
+    prompt = _build_finalizer_prompt("2026-06-29", "query", outputs)
+    assert "VERIFIED_SOURCES" in prompt
+    assert "https://example.com/a" in prompt
+    assert "https://example.com/b" in prompt
 
 
 def test_agent_outputs_immutability():
     """Verifies that AgentOutputs NamedTuple is immutable."""
     outputs = AgentOutputs(
-        coordinator="c", researcher="r", logic="l", contrarian="co"
+        coordinator="c",
+        researcher="r",
+        logic="l",
+        contrarian="co",
+        source_urls=[],
     )
     assert outputs.coordinator == "c"
     with pytest.raises(AttributeError):
@@ -139,33 +202,120 @@ async def test_run_coordinator():
     assert res == "coord-output"
     mock_client.async_generate.assert_called_once_with(
         "e4b-model",
-        "Break down the query: hello\nRespond in English only. "
-        "DO NOT use any emojis.",
+        "You are a research coordinator. Read the user query and identify "
+        "what it is asking for. List the main topics, regions, organizations, "
+        "and time periods that are relevant. "
+        "Do NOT describe methodology or data systems. "
+        "Do NOT explain limitations or what data you would need. "
+        "Respond in English only. DO NOT use any emojis. "
+        "Query: hello",
     )
 
 
 @pytest.mark.asyncio
-async def test_run_researcher_success():
-    """Tests run_researcher using Dependency Injection."""
+async def test_gather_researcher_summaries_returns_source_urls():
+    """gather_researcher_summaries returns ResearchSummaries with source URL."""
     mock_ollama = MagicMock(spec=OllamaClient)
     mock_searxng = MagicMock(spec=SearxngClient)
 
-    mock_ollama.async_generate = AsyncMock()
-    mock_ollama.async_generate.side_effect = ["keywords", "aligned facts"]
+    mock_ollama.async_generate = AsyncMock(
+        side_effect=["query alpha beta", "batch summary"]
+    )
+    mock_searxng.search = AsyncMock(
+        return_value=[{"url": "http://source.com", "content": "content"}]
+    )
 
+    from pipelines.workflows.deep_think_agent.agents import (
+        gather_researcher_summaries,
+    )
+
+    result = await gather_researcher_summaries(
+        mock_ollama,
+        mock_searxng,
+        None,
+        "e4b-model",
+        "user-query",
+        "2026-06-30",
+    )
+    assert isinstance(result, ResearchSummaries)
+    assert result.summaries == ["batch summary"]
+    assert result.source_urls == ["http://source.com"]
+
+
+@pytest.mark.asyncio
+async def test_run_researcher_success():
+    """Tests run_researcher map-reduce: keywords, search, align, aggregate."""
+    mock_ollama = MagicMock(spec=OllamaClient)
+    mock_searxng = MagicMock(spec=SearxngClient)
+
+    mock_ollama.async_generate = AsyncMock(
+        side_effect=[
+            "query alpha beta gamma",
+            "batch summary",
+            "aggregated result",
+        ]
+    )
     mock_searxng.search = AsyncMock(
         return_value=[{"url": "http://test.com", "content": "text content"}]
     )
 
     res = await run_researcher(
-        mock_ollama, mock_searxng, "e4b-model", "user-query", "2026-06-29"
+        mock_ollama,
+        mock_searxng,
+        None,
+        "e4b-model",
+        "12b-model",
+        "user-query",
+        "2026-06-29",
     )
-    assert res == "aligned facts"
-    assert mock_ollama.async_generate.call_count == 2
-    mock_searxng.search.assert_called_once_with("keywords")
+    assert res == "aggregated result"
+    assert mock_ollama.async_generate.call_count == 3
+    mock_searxng.search.assert_called_once()
     align_prompt = mock_ollama.async_generate.call_args_list[1][0][1]
     assert "2026-06-29" in align_prompt
-    assert "verified ground truth" in align_prompt
+    assert "user-query" in align_prompt
+    assert "cite its URL" in align_prompt
+
+
+@pytest.mark.asyncio
+async def test_run_researcher_with_brave_client():
+    """Tests run_researcher fans out to both SearXNG and Brave when provided."""
+    mock_ollama = MagicMock(spec=OllamaClient)
+    mock_searxng = MagicMock(spec=SearxngClient)
+    mock_brave = MagicMock(spec=BraveClient)
+
+    mock_ollama.async_generate = AsyncMock(
+        side_effect=[
+            "query alpha beta gamma",
+            "merged summary",
+            "aggregated result",
+        ]
+    )
+    mock_searxng.search = AsyncMock(
+        return_value=[
+            {"url": "http://searxng.com", "content": "searxng content"}
+        ]
+    )
+    mock_brave.search = AsyncMock(
+        return_value=[{"url": "http://brave.com", "content": "brave content"}]
+    )
+
+    res = await run_researcher(
+        mock_ollama,
+        mock_searxng,
+        mock_brave,
+        "e4b-model",
+        "12b-model",
+        "user-query",
+        "2026-06-29",
+    )
+    assert res == "aggregated result"
+    assert mock_ollama.async_generate.call_count == 3
+    mock_searxng.search.assert_called_once()
+    mock_brave.search.assert_called_once()
+    align_prompt = mock_ollama.async_generate.call_args_list[1][0][1]
+    assert "http://searxng.com" in align_prompt
+    assert "http://brave.com" in align_prompt
 
 
 @pytest.mark.asyncio
@@ -177,7 +327,13 @@ async def test_run_researcher_empty_results():
     mock_searxng.search = AsyncMock(return_value=[])
 
     res = await run_researcher(
-        mock_ollama, mock_searxng, "e4b-model", "user-query", "2026-06-29"
+        mock_ollama,
+        mock_searxng,
+        None,
+        "e4b-model",
+        "12b-model",
+        "user-query",
+        "2026-06-29",
     )
     assert res is NO_FACTS_FOUND
     assert mock_ollama.async_generate.call_count == 1
@@ -192,7 +348,13 @@ async def test_run_researcher_no_search_keyword():
     mock_searxng.search = AsyncMock()
 
     res = await run_researcher(
-        mock_ollama, mock_searxng, "e4b-model", "user-query", "2026-06-29"
+        mock_ollama,
+        mock_searxng,
+        None,
+        "e4b-model",
+        "12b-model",
+        "user-query",
+        "2026-06-29",
     )
     assert res == "No search results."
     mock_searxng.search.assert_not_called()
@@ -208,7 +370,13 @@ async def test_run_researcher_searxng_exception():
     mock_searxng.search = AsyncMock(side_effect=Exception("Network failure"))
 
     res = await run_researcher(
-        mock_ollama, mock_searxng, "e4b-model", "user-query", "2026-06-29"
+        mock_ollama,
+        mock_searxng,
+        None,
+        "e4b-model",
+        "12b-model",
+        "user-query",
+        "2026-06-29",
     )
     assert res is NO_FACTS_FOUND
 
@@ -224,12 +392,12 @@ async def test_run_logic():
     mock_client.async_generate.assert_called_once_with(
         "e4b-model",
         "You are a logic verifier. Query: query\n"
-        "FACTS from web search (treat as ground truth): facts\n"
-        "Step 1: Identify any conflicts between sources. "
-        "Step 2: For each conflict, reason which claim is more credible "
-        "based on source specificity, recency, and reliability. "
-        "Step 3: Output a reconciled summary of what is most likely true. "
-        "Do NOT merely list conflicts without resolution. "
+        "FACTS from web search: facts\n"
+        "Do NOT summarize or repeat the FACTS. "
+        "Identify ONLY: (1) claims that are weakly supported or lack evidence, "
+        "(2) internal contradictions between sources, "
+        "(3) assumptions presented as verified facts. "
+        "If no weaknesses exist, state so explicitly. "
         "DO NOT use any emojis.",
     )
 
@@ -262,8 +430,13 @@ async def test_run_contrarian():
     assert res == "contrarian-output"
     mock_client.async_generate.assert_called_once_with(
         "e4b-model",
-        "List counter-arguments for query: query\n"
-        "FACTS: facts\nDO NOT use any emojis.",
+        "Query: query\n"
+        "Researcher conclusion:\nfacts\n"
+        "You are a contrarian. Argue AGAINST the researcher's conclusions. "
+        "Do NOT repeat or agree with any of the researcher's claims. "
+        "For each major conclusion, provide: the opposing view, "
+        "missing evidence, or an alternative explanation. "
+        "DO NOT use any emojis.",
     )
 
 

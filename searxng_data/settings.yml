@@ -795,6 +795,7 @@ engines:
   - name: duckduckgo
     engine: duckduckgo
     shortcut: ddg
+    inactive: true
 
   - name: duckduckgo images
     engine: duckduckgo_extra
@@ -2584,21 +2585,24 @@ engines:
     engine: braveapi
     # read https://docs.searxng.org/dev/engines/online/brave.html
     api_key: ""
+    shortcut: brapi
+    categories: [general, web]
     inactive: true
 
   - name: brave
     engine: brave
     shortcut: br
+    inactive: true
     time_range_support: true
     paging: true
     categories: [general, web]
     brave_category: search
-    # brave_spellcheck: true
 
   - name: brave.images
     engine: brave
     network: brave
     shortcut: brimg
+    inactive: true
     categories: [images, web]
     brave_category: images
 
@@ -2606,6 +2610,7 @@ engines:
     engine: brave
     network: brave
     shortcut: brvid
+    inactive: true
     categories: [videos, web]
     brave_category: videos
 
@@ -2613,6 +2618,7 @@ engines:
     engine: brave
     network: brave
     shortcut: brnews
+    inactive: true
     categories: news
     brave_category: news
 

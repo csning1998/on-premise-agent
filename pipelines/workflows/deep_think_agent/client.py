@@ -1,4 +1,4 @@
-"""Client implementations for Ollama and SearXNG APIs."""
+"""Client implementations for Ollama, SearXNG, and Brave Search APIs."""
 
 import json
 import urllib.parse
@@ -95,4 +95,44 @@ class SearxngClient:
                 return response.json().get("results", [])
             except (httpx.HTTPError, ValueError) as e:
                 print(f"SearXNG search failed: {e}")
+                return []
+
+
+class BraveClient:
+    """Client for Brave Search API."""
+
+    def __init__(self, api_key: str):
+        """Initializes the client with a Brave Search API key."""
+        self._api_key = api_key
+
+    async def search(self, query: str) -> list:
+        """Queries Brave Search API and returns list of result.
+
+        Result is compatible with SearXNG-compatible format.
+        """
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.get(
+                    "https://api.search.brave.com/res/v1/web/search",
+                    headers={
+                        "Accept": "application/json",
+                        "Accept-Encoding": "gzip",
+                        "X-Subscription-Token": self._api_key,
+                    },
+                    params={"q": query, "count": 10},
+                    timeout=httpx.Timeout(
+                        connect=5.0, read=25.0, write=5.0, pool=5.0
+                    ),
+                )
+                response.raise_for_status()
+                results = response.json().get("web", {}).get("results", [])
+                return [
+                    {
+                        "url": r.get("url", ""),
+                        "content": r.get("description", ""),
+                    }
+                    for r in results
+                ]
+            except (httpx.HTTPError, ValueError) as e:
+                print(f"Brave Search failed: {e}")
                 return []

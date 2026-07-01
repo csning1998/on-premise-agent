@@ -1,4 +1,6 @@
 {
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+    "ruff.interpreter": ["/home/csning1998/GitLab/on-premise-agent/.venv/bin/python"],
     "[python]": {
         "editor.defaultFormatter": "charliermarsh.ruff",
         "editor.tabSize": 4,

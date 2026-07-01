@@ -10,6 +10,7 @@ import httpx
 import pytest
 import requests
 
+from pipelines.workflows.deep_think_agent.client import BraveClient
 from pipelines.workflows.deep_think_agent.client import OllamaClient
 from pipelines.workflows.deep_think_agent.client import SearxngClient
 from pipelines.workflows.deep_think_agent.client import parse_json_chunk
@@ -137,6 +138,49 @@ async def test_searxng_client_search_value_error():
         return_value=mock_resp,
     ):
         results = await client.search("python testing")
+        assert results == []
+
+
+@pytest.mark.asyncio
+async def test_brave_client_search():
+    """Tests BraveClient.search returns mapped url/content on success."""
+    client = BraveClient("test-api-key")
+
+    mock_request = httpx.Request(
+        "GET", "https://api.search.brave.com/res/v1/web/search"
+    )
+    mock_resp = httpx.Response(
+        200,
+        json={
+            "web": {
+                "results": [
+                    {"url": "http://example.com", "description": "example text"}
+                ]
+            }
+        },
+        request=mock_request,
+    )
+    with patch(
+        "pipelines.workflows.deep_think_agent.client.httpx.AsyncClient.get",
+        return_value=mock_resp,
+    ) as mock_get:
+        results = await client.search("test query")
+        assert results == [
+            {"url": "http://example.com", "content": "example text"}
+        ]
+        mock_get.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_brave_client_search_http_error():
+    """Tests BraveClient.search returns empty list on HTTP error."""
+    client = BraveClient("test-api-key")
+
+    with patch(
+        "pipelines.workflows.deep_think_agent.client.httpx.AsyncClient.get",
+        side_effect=httpx.HTTPError("Unauthorized"),
+    ):
+        results = await client.search("test query")
         assert results == []
 
 

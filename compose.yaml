@@ -107,6 +107,7 @@ services:
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL}
       - SEARXNG_BASE_URL=${SEARXNG_BASE_URL}
       - PIPELINES_API_KEY=${OPENAI_API_KEYS}
+      - BRAVE_API_KEY=${BRAVE_API_KEY}
       - PYTHONPATH=/app
       - PIPELINES_DIR=/app/pipelines/workflows
     restart: unless-stopped

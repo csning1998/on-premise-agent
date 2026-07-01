@@ -7,6 +7,7 @@ Requires Python 3.11+ for asyncio.Runner.
 
 import asyncio
 import datetime
+import os
 import re
 from typing import Any
 from typing import Callable
@@ -22,12 +23,18 @@ from pydantic import Field
 
 from pipelines.workflows.deep_think_agent.agents import NO_FACTS_FOUND
 from pipelines.workflows.deep_think_agent.agents import AgentOutputs
+from pipelines.workflows.deep_think_agent.agents import ResearchSummaries
+from pipelines.workflows.deep_think_agent.agents import _build_aggregate_prompt
+from pipelines.workflows.deep_think_agent.agents import _build_contrarian_prompt
+from pipelines.workflows.deep_think_agent.agents import (
+    _build_coordinator_prompt,
+)
 from pipelines.workflows.deep_think_agent.agents import _build_finalizer_prompt
-from pipelines.workflows.deep_think_agent.agents import _Sentinel
-from pipelines.workflows.deep_think_agent.agents import run_contrarian
-from pipelines.workflows.deep_think_agent.agents import run_coordinator
-from pipelines.workflows.deep_think_agent.agents import run_logic
-from pipelines.workflows.deep_think_agent.agents import run_researcher
+from pipelines.workflows.deep_think_agent.agents import _build_logic_prompt
+from pipelines.workflows.deep_think_agent.agents import (
+    gather_researcher_summaries,
+)
+from pipelines.workflows.deep_think_agent.client import BraveClient
 from pipelines.workflows.deep_think_agent.client import OllamaClient
 from pipelines.workflows.deep_think_agent.client import SearxngClient
 from pipelines.workflows.deep_think_agent.config import OLLAMA_BASE_URL
@@ -71,6 +78,10 @@ class Pipeline:
             default="gemma4:12b-it-qat",
             description="Model identifier for finalizer.",
         )
+        brave_api_key: str = Field(
+            default=os.environ.get("BRAVE_API_KEY", ""),
+            description="Brave Search API key. Leave empty to disable.",
+        )
 
     def __init__(self):
         """Initializes the pipeline with default valves."""
@@ -99,129 +110,116 @@ class Pipeline:
         today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
         ollama_client = OllamaClient(self.valves.ollama_url)
         searxng_client = SearxngClient(self.valves.searxng_url)
+        brave_client = (
+            BraveClient(self.valves.brave_api_key)
+            if self.valves.brave_api_key
+            else None
+        )
 
         def stream_response():
-            # Reuse a single event loop across all async stages. Open WebUI
-            # Pipelines runs pipe() in a threadpool with no running loop, so
-            # a single Runner replaces the prior multiple asyncio.run() calls.
             with asyncio.Runner() as runner:
+
+                def emit(description: str, done: bool = False):
+                    if callable(__event_emitter__):
+                        runner.run(
+                            __event_emitter__(
+                                {
+                                    "type": "status",
+                                    "data": {
+                                        "description": description,
+                                        "done": done,
+                                    },
+                                }
+                            )
+                        )
+
+                emit("Stage 1: Coordinator analyzing query")
                 yield "<think>\n"
-                yield "Agents initializing...\n\n"
-
-                if callable(__event_emitter__):
-                    runner.run(
-                        __event_emitter__(
-                            {
-                                "type": "status",
-                                "data": {
-                                    "description": (
-                                        "Stage 1: Coordinator and Research"
-                                        " starting"
-                                    ),
-                                    "done": False,
-                                },
-                            }
-                        )
-                    )
-
-                async def run_stage_1():
-                    t1 = asyncio.create_task(
-                        run_coordinator(
-                            ollama_client,
-                            self.valves.gemma_e4b_model,
-                            user_message,
-                        )
-                    )
-                    t2 = asyncio.create_task(
-                        run_researcher(
-                            ollama_client,
-                            searxng_client,
-                            self.valves.gemma_e4b_model,
-                            user_message,
-                            today,
-                        )
-                    )
-                    return await asyncio.gather(t1, t2)
-
-                coordinator_output, researcher_facts = runner.run(run_stage_1())
-
-                yield (
-                    f"Coordinator:\n\n{_strip_markdown(coordinator_output)}\n\n"
+                yield "Coordinator:\n\n"
+                coordinator_chunks: list[str] = []
+                for chunk in ollama_client.stream_generate(
+                    self.valves.gemma_e4b_model,
+                    _build_coordinator_prompt(user_message),
+                ):
+                    yield chunk
+                    coordinator_chunks.append(chunk)
+                coordinator_output = _strip_markdown(
+                    "".join(coordinator_chunks)
                 )
+                yield "\n\n</think>\n\n"
 
-                if researcher_facts is NO_FACTS_FOUND:
-                    researcher_snippet = "No web search results found."
-                elif len(researcher_facts) > 300:
-                    researcher_snippet = researcher_facts[:300] + "..."
+                emit("Stage 2: Researcher gathering facts")
+                summaries_result = runner.run(
+                    gather_researcher_summaries(
+                        ollama_client,
+                        searxng_client,
+                        brave_client,
+                        self.valves.gemma_e4b_model,
+                        user_message,
+                        today,
+                    )
+                )
+                yield "<think>\n"
+                yield "Research:\n\n"
+                if isinstance(summaries_result, ResearchSummaries):
+                    researcher_chunks: list[str] = []
+                    for chunk in ollama_client.stream_generate(
+                        self.valves.gemma_12b_model,
+                        _build_aggregate_prompt(
+                            today, user_message, summaries_result.summaries
+                        ),
+                    ):
+                        yield chunk
+                        researcher_chunks.append(chunk)
+                    researcher_facts = "".join(researcher_chunks)
+                    source_urls = summaries_result.source_urls
                 else:
-                    researcher_snippet = researcher_facts
-                yield (
-                    f"Research:\n\n{_strip_markdown(researcher_snippet)}\n\n"
-                )
+                    source_urls = []
+                    if summaries_result is NO_FACTS_FOUND:
+                        yield "No web search results found."
+                        researcher_facts = NO_FACTS_FOUND
+                    elif summaries_result == "No search results.":
+                        yield summaries_result
+                        researcher_facts = NO_FACTS_FOUND
+                    else:
+                        yield summaries_result
+                        researcher_facts = summaries_result
+                yield "\n\n</think>\n\n"
 
-                if callable(__event_emitter__):
-                    runner.run(
-                        __event_emitter__(
-                            {
-                                "type": "status",
-                                "data": {
-                                    "description": (
-                                        "Stage 2: Logic and Contrarian starting"
-                                    ),
-                                    "done": False,
-                                },
-                            }
-                        )
-                    )
+                emit("Stage 3: Logic verification")
+                yield "<think>\n"
+                yield "Logic:\n\n"
+                logic_chunks: list[str] = []
+                for chunk in ollama_client.stream_generate(
+                    self.valves.gemma_e4b_model,
+                    _build_logic_prompt(user_message, researcher_facts),
+                ):
+                    yield chunk
+                    logic_chunks.append(chunk)
+                logic_output = _strip_markdown("".join(logic_chunks))
+                yield "\n\n</think>\n\n"
 
-                async def run_stage_2(facts: str | _Sentinel):
-                    t1 = asyncio.create_task(
-                        run_logic(
-                            ollama_client,
-                            self.valves.gemma_e4b_model,
-                            user_message,
-                            facts,
-                        )
-                    )
-                    t2 = asyncio.create_task(
-                        run_contrarian(
-                            ollama_client,
-                            self.valves.gemma_e4b_model,
-                            user_message,
-                            facts,
-                        )
-                    )
-                    return await asyncio.gather(t1, t2)
+                emit("Stage 4: Contrarian analysis")
+                yield "<think>\n"
+                yield "Contrarian:\n\n"
+                contrarian_chunks: list[str] = []
+                for chunk in ollama_client.stream_generate(
+                    self.valves.gemma_e4b_model,
+                    _build_contrarian_prompt(user_message, researcher_facts),
+                ):
+                    yield chunk
+                    contrarian_chunks.append(chunk)
+                contrarian_output = _strip_markdown("".join(contrarian_chunks))
+                yield "\n\n</think>\n\n"
 
-                logic_output, contrarian_output = runner.run(
-                    run_stage_2(researcher_facts)
-                )
+                emit("Agents execution completed", done=True)
 
-                if callable(__event_emitter__):
-                    runner.run(
-                        __event_emitter__(
-                            {
-                                "type": "status",
-                                "data": {
-                                    "description": "Agents execution completed",
-                                    "done": True,
-                                },
-                            }
-                        )
-                    )
-
-                yield f"Logic:\n\n{_strip_markdown(logic_output)}\n\n"
-                yield (
-                    f"Contrarian:\n\n{_strip_markdown(contrarian_output)}\n\n"
-                )
-                yield "</think>\n\n"
-
-                # Package into immutable NamedTuple to preserve final states
                 agent_outputs = AgentOutputs(
                     coordinator=coordinator_output,
                     researcher=researcher_facts,
                     logic=logic_output,
                     contrarian=contrarian_output,
+                    source_urls=source_urls,
                 )
 
                 final_prompt = _build_finalizer_prompt(
