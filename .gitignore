@@ -24,6 +24,10 @@ pipelines/workflows/**/valves.json
 .venv/
 venv/
 
+# Node/TypeScript (OpenClaw plugins)
+openclaw/plugins/*/node_modules/
+openclaw/plugins/*/dist/
+
 # Terraform
 .terraform/
 .terraform.tfstate.lock.info
@@ -46,6 +50,12 @@ runner-config/
 ollama_data/
 open-webui_data/
 openclaw_data/
+
+# OpenClaw gateway runtime state and config (config directory is a whole-dir
+# bind mount; the gateway rewrites openclaw.json at runtime, so only the
+# template is tracked, matching the .env/.env.example pattern)
+openclaw/config/*
+!openclaw/config/openclaw.json.example
 
 # HashiCorp Vault (Podman bootstrapper)
 vault/data/

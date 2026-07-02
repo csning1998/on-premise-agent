@@ -1,0 +1,19 @@
+{
+  "id": "leetcode-benchmark",
+  "name": "LeetCode Benchmark",
+  "description": "Look up a fixed local table of LeetCode problems for tool-calling benchmarking.",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "lookup_leetcode_problem"
+    ]
+  }
+}

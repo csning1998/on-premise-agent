@@ -53,5 +53,15 @@
                 "primary": "ollama/gemma4:E4B-it-qat"
             }
         }
+    },
+    "plugins": {
+        "allow": [
+            "leetcode-benchmark"
+        ],
+        "entries": {
+            "leetcode-benchmark": {
+                "enabled": true
+            }
+        }
     }
 }

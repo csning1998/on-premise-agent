@@ -144,14 +144,19 @@ services:
     image: ghcr.io/openclaw/openclaw:${OPENCLAW_VERSION}
     container_name: openclaw-gateway
     user: "${HOST_UID}:${HOST_GID}"
+    userns_mode: keep-id
+    ports:
+      - "127.0.0.1:18789:18789"
     networks:
       - rag-network
     volumes:
-      - ./openclaw/openclaw.json:/home/node/.openclaw/openclaw.json:z
+      - ./openclaw/config:/home/node/.openclaw:z
+      - ./openclaw_data/gateway-state:/home/node/.openclaw-state:z
       - ./openclaw_data/workspace:/home/node/.openclaw/workspace:z
       - ./openclaw_data/auth-profile-secrets:/home/node/.config/openclaw:z
+      - ./openclaw/plugins:/home/node/plugins:z
     environment:
-      - OPENCLAW_STATE_DIR=/home/node/.openclaw
+      - OPENCLAW_STATE_DIR=/home/node/.openclaw-state
       - OPENCLAW_CONFIG_PATH=/home/node/.openclaw/openclaw.json
       - OPENCLAW_WORKSPACE_DIR=/home/node/.openclaw/workspace
       - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
@@ -165,12 +170,15 @@ services:
     entrypoint: ["node", "dist/index.js"]
     network_mode: "service:openclaw-gateway"
     user: "${HOST_UID}:${HOST_GID}"
+    userns_mode: keep-id
     volumes:
-      - ./openclaw/openclaw.json:/home/node/.openclaw/openclaw.json:z
+      - ./openclaw/config:/home/node/.openclaw:z
+      - ./openclaw_data/gateway-state:/home/node/.openclaw-state:z
       - ./openclaw_data/workspace:/home/node/.openclaw/workspace:z
       - ./openclaw_data/auth-profile-secrets:/home/node/.config/openclaw:z
+      - ./openclaw/plugins:/home/node/plugins:z
     environment:
-      - OPENCLAW_STATE_DIR=/home/node/.openclaw
+      - OPENCLAW_STATE_DIR=/home/node/.openclaw-state
       - OPENCLAW_CONFIG_PATH=/home/node/.openclaw/openclaw.json
       - OPENCLAW_WORKSPACE_DIR=/home/node/.openclaw/workspace
       - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
