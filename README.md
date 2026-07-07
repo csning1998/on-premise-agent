@@ -4,7 +4,7 @@
 
 This project implements a **Multistage Deep-Thinking Agent** that integrates **Ollama**, **Open WebUI**, and **SearXNG** to provide advanced reasoning capabilities. It addresses the limitations of the native RAG system by utilizing a containerized **Pipelines** service for complex, multistage tasks.
 
-Native RAG mode cannot switch models between the intent analysis and deep reasoning stages. In an 8GB VRAM environment, this leads to Out-of-Memory (OOM) errors or severe performance degradation when attempting to load E4B and 26B simultaneously.
+Native RAG mode cannot switch models between the intent analysis and deep reasoning stages. In an 8GB VRAM environment, this leads to Out-of-Memory (OOM) errors or severe performance degradation when attempting to load E4B and 12B simultaneously.
 
 ### Development machine (for reference only)
 
@@ -15,7 +15,103 @@ Native RAG mode cannot switch models between the intent analysis and deep reason
 - **SSD**: WD PC SN560 1 TB
 - **OS**: Linux, Fedora 44 KDE
 
-## Section 1. Configure Environment
+## Section 1. System Architecture
+
+### Service Topology
+
+The stack runs as Podman (rootless) containers on a single `rag-network` bridge, defined in [`compose.yaml`](compose.yaml).
+
+| Service                             | Image                           | Role                                                                                                       |
+| ----------------------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `ollama`                            | `ollama/ollama`                 | Local LLM inference engine; every model call terminates here. GPU-backed via CDI.                          |
+| `open-webui`                        | `ghcr.io/open-webui/open-webui` | Chat frontend (host port `3000`). Routes multistage requests to `pipelines`.                               |
+| `pipelines`                         | `ghcr.io/open-webui/pipelines`  | Plugin runtime hosting the Deep Think multistage agent under `pipelines/workflows/`.                       |
+| `searxng`                           | `searxng/searxng`               | Self-hosted meta-search engine (Bing, DuckDuckGo, Brave, Wikipedia); supplies real-time facts.             |
+| `openclaw-gateway` / `openclaw-cli` | `openclaw/openclaw`             | Tool-calling agent runtime (separate track from the pipeline), integrated with native Ollama tool-calling. |
+| `vault`                             | `hashicorp/vault`               | Secret storage (client port `8210`).                                                                       |
+| `gitlab-runner`                     | `gitlab/gitlab-runner`          | Local CI executor.                                                                                         |
+
+### Deep Think Pipeline Flow
+
+The pipeline is a five-stage reasoning chain implemented in [`deep_think_pipeline.py`](pipelines/workflows/deep_think_pipeline.py), orchestrating agents defined in [`deep_think_agent/agents.py`](pipelines/workflows/deep_think_agent/agents.py). Every stage except the final answer is streamed into a collapsible `<think>` block in the UI.
+
+```mermaid
+flowchart TD
+    Q["User query"] --> C["Stage 1: Coordinator (E2B)"]
+    C --> K["Stage 2: Keywords (E2B)"]
+K --> S["Parallel search: SearXNG (+ Brave if API key set)"]
+    S --> RF["Relevance filter (E2B)"]
+    RF --> AL["Per-query Align (E4B)"]
+    AL --> AG["Aggregate / Reduce (12B)"]
+    AG --> L["Stage 3: Logic verifier (E4B)"]
+    AG --> X["Stage 4: Contrarian (E4B)"]
+    L --> F["Finalizer (12B)"]
+    X --> F
+    F --> O["Final answer + citations"]
+```
+
+1. **Coordinator** identifies the query's topics, regions, organizations, and time periods.
+2. **Researcher** is a map-reduce over web search: it generates 3 to 5 sub-queries, searches SearXNG (and Brave when an API key is set) in parallel, deduplicates candidates by URL, filters them for relevance, summarizes each query's results (Align), then reduces all summaries into one factual context.
+3. **Logic verifier** flags weakly-supported claims, contradictions between sources, and assumptions presented as facts.
+4. **Contrarian** argues against the researcher's conclusions to surface missing evidence and alternative explanations.
+5. **Finalizer** synthesizes all four agent outputs into the answer, citing only URLs retrieved directly from the search API, formatted as markdown links.
+
+When web search yields no usable results, the pipeline carries a `NO_FACTS_FOUND` sentinel that switches every downstream prompt to a training-knowledge-only mode with an explicit data-absence disclaimer.
+
+![Deep Think pipeline in Open WebUI](documentation/assets/deep-think-openwebui.png)
+
+_Deep Think pipeline in Open WebUI: each stage renders as a collapsible reasoning block, and the finalizer cites verifiable source links inline._
+
+### OpenClaw Agent
+
+OpenClaw runs as a separate tool-calling track against native Ollama (shown here on `gemma4:E4B-it-qat`), exercising web search and memory tools from its own control UI.
+
+![OpenClaw control UI](documentation/assets/openclaw-chat-ui.png)
+
+_OpenClaw control UI: a chat session issuing a `web_search` tool call, with the active model and context usage shown in the composer._
+
+## Section 2. Technology Selection
+
+The controlling non-functional requirement is the **8 GB VRAM ceiling** of the development GPU. Every choice below follows from the inability to hold large models and large context windows in memory at the same time.
+
+| Concern                   | Choice                         | Rationale                                                                                                                                                                                             | Trade-off accepted                                          |
+| ------------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| Inference                 | Ollama (local)                 | Full local execution; no per-request cost or daily quota; data stays on host.                                                                                                                         | Bound by single-GPU VRAM.                                   |
+| Per-stage model switching | Open WebUI **Pipelines**       | Native RAG cannot switch models between intent analysis and deep reasoning; loading two large tiers at once triggers OOM on 8 GB. Pipelines lets each stage load only the model it needs.             | Custom pipeline code to maintain.                           |
+| Frontend                  | Open WebUI                     | Recognizes `<think>` reasoning tags and renders them as collapsible blocks.                                                                                                                           | —                                                           |
+| Real-time facts           | SearXNG (+ optional Brave)     | Self-hosted meta-search closes the training-cutoff gap for the researcher stage.                                                                                                                      | Result quality depends on upstream engines.                 |
+| Tool-calling agent        | **OpenClaw**, not Hermes Agent | Hermes Agent enforces a minimum **64K** context and rejects smaller models at startup; a local 8B model at 64K exceeds 8 GB VRAM. OpenClaw runs against native Ollama tool-calling at `num_ctx=8192`. | OpenClaw's own recommended 64K is likewise reduced to 8192. |
+| Secrets                   | HashiCorp Vault                | Central secret storage instead of committed plaintext.                                                                                                                                                | —                                                           |
+
+The Hermes Agent 64K minimum and its startup rejection of smaller-context models are documented in the [Hermes Agent providers reference](https://hermes-agent.nousresearch.com/docs/integrations/providers).
+
+### Known Upstream Issues
+
+Two upstream defects, both verified on this stack, further constrain which model can drive the tool-calling agent under the same single-GPU budget:
+
+- **Gemma 4 is not detected as a reasoning model in OpenClaw** ([openclaw/openclaw#68728](https://github.com/openclaw/openclaw/issues/68728), closed). OpenClaw's `isReasoningModelHeuristic` regex does not match `gemma4`, so Ollama think mode is never enabled and some agent pipelines return blank or misrouted responses. This is why the tool-calling agent is benchmarked with `qwen3:8b` and `hermes3:8b` alongside the Gemma 4 baseline rather than relying on Gemma 4 for tool use.
+- **Hermes-3 8B leaks tool calls into `content` on the OpenAI-compatible endpoint** ([NVIDIA/NemoClaw#2731](https://github.com/NVIDIA/NemoClaw/issues/2731), closed). Under multi-tool prompts, Hermes-3 8B emits tool calls as stringified JSON inside `content` instead of the structured `tool_calls` field; the defect is scoped to the `/v1` path. OpenClaw is therefore configured with the native `api: "ollama"` mode, which avoids that parser.
+
+## Section 3. Model Responsibilities
+
+Three Gemma 4 tiers are assigned by stage so that each stage runs on the smallest model that meets its quality bar. Tags are configured in the pipeline `Valves` in [`deep_think_pipeline.py`](pipelines/workflows/deep_think_pipeline.py).
+
+| Model tag           | Tier                        | Stages served                                           | Reason                                                                                                |
+| ------------------- | --------------------------- | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `gemma4:e2b-it-qat` | E2B (loads as 4.63B params) | Coordinator, Keyword generation, Relevance filter       | Short outputs (under ~200 tokens); the smaller tier minimizes generation latency and model-swap cost. |
+| `gemma4:E4B-it-qat` | E4B                         | Per-query Align (summarize), Logic verifier, Contrarian | Mid-tier reasoning over bounded per-query context.                                                    |
+| `gemma4:12b-it-qat` | 12B                         | Research aggregation (reduce), Finalizer                | Heaviest synthesis across all sources; run alone to stay within VRAM.                                 |
+
+### Client Call Modes
+
+Model calls go through [`client.py`](pipelines/workflows/deep_think_agent/client.py) in two modes:
+
+- `stream_generate`: streaming, `num_ctx=16384`, 300 s timeout. Used for stages surfaced live in the UI (Coordinator, aggregate, Logic, Contrarian, Finalizer).
+- `async_generate`: non-streaming, `keep_alive=5m`, 300 s timeout, Ollama default context. Used for internal steps whose outputs are consumed programmatically (Keywords, Relevance, Align).
+
+The 12B tier cannot share the GPU with a second parallel slot on 8 GB VRAM, so `OLLAMA_NUM_PARALLEL` is pinned to `1` in [`compose.yaml`](compose.yaml).
+
+## Section 4. Configure Environment
 
 ### Step A. NVIDIA GPU Container Device Interface
 
@@ -169,7 +265,7 @@ Use OpenTofu/Terraform to start the integrated services and ensure SELinux label
     podman logs -f open-webui
     ```
 
-## Section 2. Troubleshooting
+## Section 5. Troubleshooting
 
 ### A. Permission Denied (`mkdir /root/.ollama/models`)
 
